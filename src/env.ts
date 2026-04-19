@@ -20,6 +20,14 @@ export interface Env {
   agentName: string;
   authKey: string | null;
   allowPublicUnauthenticated: boolean;
+  /**
+   * When true, /talk also requires the shared auth key. Default false:
+   * /talk is the public product surface and stays open even with authKey
+   * set — rate limit + daily budget are the real controls. Turn on for
+   * intranet-style deployments where /talk should only accept approved
+   * clients.
+   */
+  protectTalk: boolean;
   maxTokensPerDay: number;
   talkRateLimitPerMin: number;
   dataDir: string;
@@ -106,6 +114,7 @@ export function loadEnv(): Env {
     agentName,
     authKey: process.env.PUBLIC_AGENT_AUTH_KEY?.trim() || null,
     allowPublicUnauthenticated: process.env.ALLOW_PUBLIC_UNAUTHENTICATED === 'true',
+    protectTalk: process.env.PROTECT_TALK === 'true',
     maxTokensPerDay: intOr('MAX_TOKENS_PER_DAY', process.env.MAX_TOKENS_PER_DAY, 0),
     talkRateLimitPerMin: intOr('TALK_RATE_LIMIT_PER_MIN', process.env.TALK_RATE_LIMIT_PER_MIN, 10),
     dataDir: process.env.PUBLIC_AGENT_DATA_DIR?.trim() || '/app/data',

@@ -54,15 +54,18 @@ export function requireAuth(env: Env): MiddlewareHandler {
 }
 
 /**
- * requireAuthOrPublicTalk — /talk is a public product surface.
+ * requireAuthOrPublicTalk — /talk is the public product surface.
  *
- * - authKey set: require matching Bearer token.
- * - authKey unset + allowPublicUnauthenticated=true: pass through (dev mode).
- * - authKey unset + allowPublicUnauthenticated=false: still allow — /talk is
- *   intentionally public. Rate limit + budget cap are the real controls.
+ * Default behaviour: pass through regardless of authKey. Rate limit and the
+ * daily token budget are the real controls that protect upstream OpenRouter
+ * cost.
+ *
+ * Intranet / private deployments can set PROTECT_TALK=true to gate /talk
+ * with the same Bearer token as operator endpoints. Only honoured when
+ * authKey is also set (otherwise there is nothing to check against).
  */
 export function requireAuthOrPublicTalk(env: Env): MiddlewareHandler {
-  if (env.authKey !== null) {
+  if (env.authKey !== null && env.protectTalk === true) {
     const expected = env.authKey;
     return async (c, next) => {
       const header = c.req.header('authorization') || '';
@@ -74,7 +77,7 @@ export function requireAuthOrPublicTalk(env: Env): MiddlewareHandler {
     };
   }
 
-  // No key: /talk is always open regardless of ALLOW_PUBLIC_UNAUTHENTICATED.
+  // Default: /talk is open. Operator endpoints stay gated by requireAuth.
   return async (_c, next) => {
     await next();
   };
