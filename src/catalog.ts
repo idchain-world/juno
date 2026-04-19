@@ -11,10 +11,12 @@ export function buildCatalog(env: Env) {
       well_known: '/.well-known/restap.json',
       health: '/health',
       identity: '/identity',
+      mcp: '/mcp',
     },
-    capabilities: ['talk', 'news', 'search_knowledge', 'read_knowledge'],
+    capabilities: ['talk', 'news', 'mcp', 'search_knowledge', 'read_knowledge'],
     auth: {
-      talk: 'none',
+      talk: env.protectTalk ? 'bearer' : 'none',
+      mcp: 'bearer',
       operator: 'ssh-tunnel',
     },
     limits: {

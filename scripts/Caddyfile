@@ -12,7 +12,10 @@ docs.idagents.ai {
 
     # Belt-and-suspenders: even if PUBLIC_AGENT_HOST gets misconfigured,
     # we refuse operator paths from the public interface.
-    @operator path /inbox* /news* /mcp*
+    # /mcp is intentionally NOT in this list — it is exposed publicly on the
+    # public listener with Bearer auth so MCP clients (Claude Code, Cursor)
+    # can reach it without an SSH tunnel.
+    @operator path /inbox* /news*
     respond @operator 404
 
     log {

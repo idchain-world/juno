@@ -71,9 +71,11 @@ function toolsList(env: Env) {
 }
 
 async function relay(env: Env, incomingAuth: string | null, path: '/talk' | '/news', body: unknown) {
-  // Loopback so we don't leave the container. The egress iptables rules
-  // in entrypoint.sh allow lo freely, so this stays inside the sandbox.
-  const url = `http://127.0.0.1:${env.port}${path}`;
+  // Loopback to whichever listener actually owns the path. /talk lives on the
+  // public listener (env.port), /news lives on the operator listener
+  // (env.operatorPort). Both loopback-only; no egress.
+  const port = path === '/news' ? env.operatorPort : env.port;
+  const url = `http://127.0.0.1:${port}${path}`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (incomingAuth) headers.Authorization = incomingAuth;
   const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });

@@ -46,13 +46,20 @@ const oversize = (maxSize: number) =>
       c.json({ error: 'payload_too_large', limit: maxSize }, 413),
   });
 
-// ── Public listener: internet-reachable surfaces (/talk, /health, /identity, /.well-known/*) ──
+// ── Public listener: internet-reachable surfaces (/talk, /health, /identity, /.well-known/*, /mcp) ──
+// /mcp is also mounted here so MCP clients (Claude Code, Cursor, etc.) can reach the agent
+// without an SSH tunnel. The route's own requireAuth middleware still demands the Bearer
+// token, so behaviour matches the operator listener — only the transport differs.
+// The MCP shim exposes exactly two tools: `talk` (sync reply) and `news` (fire-and-forget).
+// No inbox/news-feed read tool is ever exposed via MCP.
 const publicApp = new Hono();
 publicApp.on('POST', '/talk', oversize(TALK_BODY_LIMIT));
+publicApp.on('POST', '/mcp', oversize(MCP_BODY_LIMIT));
 publicApp.route('/', wellknownRoutes(env));
 publicApp.route('/', healthRoutes(env));
 publicApp.route('/', identityRoutes(env));
 publicApp.route('/', talkRoutes(env, knowledge));
+publicApp.route('/', mcpRoutes(env));
 publicApp.all('*', (c) => c.json({ error: 'not_found', path: c.req.path }, 404));
 
 // ── Operator listener: loopback-only surfaces (/inbox, /news, /mcp) ──
