@@ -45,7 +45,7 @@ if ! printf '%s' "$NAME" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$'; then
 fi
 # Defensive second check — no path separators, no dots, no NUL.
 case "$NAME" in
-  */*|*..*|*.*|*"/"*|*$'\0'*) die "invalid name '$NAME' (illegal characters)" ;;
+  */*|*..*|*.*) die "invalid name '$NAME' (illegal characters)" ;;
 esac
 
 if ! printf '%s' "$DOMAIN" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'; then
