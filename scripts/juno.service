@@ -1,0 +1,34 @@
+[Unit]
+Description=Juno public-agent runtime
+Documentation=https://github.com/idchain-world/juno
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=juno
+Group=juno
+WorkingDirectory=/opt/juno
+EnvironmentFile=/etc/juno.env
+ExecStart=/usr/bin/node /opt/juno/dist/server.js
+Restart=on-failure
+RestartSec=5
+# Sandboxing — Ubuntu 24.04 systemd supports all of these out of the box.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+ReadWritePaths=/opt/juno/data /opt/juno/knowledge
+
+[Install]
+WantedBy=multi-user.target

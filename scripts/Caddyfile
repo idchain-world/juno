@@ -1,0 +1,25 @@
+# Replace docs.idagents.ai with your actual hostname.
+#
+# Only the PUBLIC endpoints are proxied. Operator endpoints
+# (/inbox, /news, /mcp) stay on 127.0.0.1:4201 and are reached
+# from your laptop via:
+#   ssh -L 4201:127.0.0.1:4201 root@<vps-ip>
+
+docs.idagents.ai {
+    encode gzip
+
+    reverse_proxy 127.0.0.1:4200
+
+    # Belt-and-suspenders: even if PUBLIC_AGENT_HOST gets misconfigured,
+    # we refuse operator paths from the public interface.
+    @operator path /inbox* /news* /mcp*
+    respond @operator 404
+
+    log {
+        output file /var/log/caddy/juno.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+        format console
+    }
+}
