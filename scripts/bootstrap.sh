@@ -9,10 +9,13 @@ set -euo pipefail
 
 JUNO_REPO="${JUNO_REPO:-https://github.com/idchain-world/juno.git}"
 JUNO_ROOT="${JUNO_ROOT:-/opt/juno}"
+APT_UPGRADE="${APT_UPGRADE:-0}"   # set to 1 to run apt-get upgrade
 
 echo "== updating apt + installing base =="
 apt-get update -y
-apt-get upgrade -y
+if [ "$APT_UPGRADE" = "1" ]; then
+  apt-get upgrade -y
+fi
 apt-get install -y curl ufw debian-keyring debian-archive-keyring apt-transport-https
 
 echo "== installing Node 22 =="
@@ -36,24 +39,36 @@ ufw allow 80
 ufw allow 443
 ufw --force enable
 
-echo "== creating juno user + directory layout =="
+echo "== creating juno user + state dirs =="
 id -u juno >/dev/null 2>&1 || useradd --system --home-dir "$JUNO_ROOT" --shell /usr/sbin/nologin juno
-mkdir -p "$JUNO_ROOT" "$JUNO_ROOT/instances"
 mkdir -p /etc/juno                # per-instance env files
 mkdir -p /etc/caddy/juno.d        # per-instance Caddy site blocks
 mkdir -p /var/lib/juno            # allocation lock, any future state
-chown -R juno:juno "$JUNO_ROOT"
 chmod 0755 /etc/juno /etc/caddy/juno.d /var/lib/juno
 
 echo "== cloning Juno =="
+# git clone requires the target to either not exist or be empty. Do the clone
+# before creating $JUNO_ROOT/instances so we don't prime a non-empty parent.
 if [ ! -d "$JUNO_ROOT/.git" ]; then
+  if [ -d "$JUNO_ROOT" ] && [ -n "$(ls -A "$JUNO_ROOT" 2>/dev/null)" ]; then
+    echo "bootstrap: $JUNO_ROOT exists and is non-empty but has no .git — aborting to avoid clobber." >&2
+    echo "           Move it aside (e.g. mv $JUNO_ROOT ${JUNO_ROOT}.old) and re-run." >&2
+    exit 1
+  fi
+  mkdir -p "$JUNO_ROOT"
+  chown juno:juno "$JUNO_ROOT"
   sudo -u juno git clone "$JUNO_REPO" "$JUNO_ROOT"
 else
   sudo -u juno git -C "$JUNO_ROOT" pull --ff-only
 fi
+mkdir -p "$JUNO_ROOT/instances"
+chown -R juno:juno "$JUNO_ROOT"
+
 cd "$JUNO_ROOT"
-sudo -u juno npm ci --omit=dev || sudo -u juno npm install --omit=dev
+# Full install (dev deps needed for tsc), then build, then prune to production.
+sudo -u juno npm ci
 sudo -u juno npm run build
+sudo -u juno npm prune --omit=dev
 
 echo "== installing templated systemd unit =="
 install -m 0644 "$JUNO_ROOT/scripts/juno@.service" /etc/systemd/system/juno@.service

@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
 # Provision a new Juno instance on this VPS.
 #
-#   sudo ./juno-add.sh <name> <domain>
+#   sudo ./juno-add.sh <name> <domain> [--openrouter-key=<key>]
+#
+# Or via env:
+#   sudo OPENROUTER_API_KEY=sk-or-... ./juno-add.sh <name> <domain>
 #
 # Renders per-instance env + Caddy site block, allocates a free port pair,
 # starts the systemd instance, reloads Caddy.
 #
 # - <name> must match ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ (lowercase alnum + dash)
 # - <domain> must not already be in use by another juno site block
-# - Exits non-zero and rolls back partial writes on any failure
+# - If --openrouter-key (or OPENROUTER_API_KEY env) is supplied, the key is
+#   substituted into the env file and the unit starts immediately. Otherwise
+#   the env file keeps the __OPENROUTER_API_KEY__ placeholder and the unit is
+#   left enabled-but-stopped.
+# - Exits non-zero and rolls back partial writes on any failure.
 #
 # Requires: root (for /etc/juno, /opt/juno, systemctl, caddy reload).
 
@@ -27,18 +34,33 @@ PORT_BASE="${JUNO_PORT_BASE:-4200}"
 PORT_MAX="${JUNO_PORT_MAX:-4398}"  # 100 instances max by default.
 
 usage() {
-  echo "Usage: $0 <name> <domain>" >&2
+  echo "Usage: $0 <name> <domain> [--openrouter-key=<key>]" >&2
   echo "  name   lowercase alnum + dash, 1-32 chars" >&2
   echo "  domain fully-qualified hostname with DNS pointing at this VPS" >&2
+  echo "  --openrouter-key=<key>  (or OPENROUTER_API_KEY env) skips the" >&2
+  echo "                           manual env edit and starts the unit." >&2
   exit 1
 }
 
 die() { echo "juno-add: $*" >&2; exit 1; }
 
-# ── arg validation ───────────────────────────────────────────────────────
-[ "$#" -eq 2 ] || usage
-NAME="$1"
-DOMAIN="$2"
+# ── arg parsing ──────────────────────────────────────────────────────────
+NAME=""
+DOMAIN=""
+OR_KEY="${OPENROUTER_API_KEY:-}"
+for arg in "$@"; do
+  case "$arg" in
+    --openrouter-key=*) OR_KEY="${arg#--openrouter-key=}" ;;
+    --*)                die "unknown flag: $arg" ;;
+    *)
+      if [ -z "$NAME" ]; then NAME="$arg"
+      elif [ -z "$DOMAIN" ]; then DOMAIN="$arg"
+      else die "too many positional arguments"
+      fi
+      ;;
+  esac
+done
+[ -n "$NAME" ] && [ -n "$DOMAIN" ] || usage
 
 if ! printf '%s' "$NAME" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$'; then
   die "invalid name '$NAME' (must be lowercase alnum + dash, 1-32 chars)"
@@ -127,10 +149,18 @@ sed \
   -e "s|__AUTH_KEY__|${AUTH_KEY}|g" \
   "$ENV_TEMPLATE" > "$ENV_TMP"
 
-# Leave the OPENROUTER_API_KEY placeholder intact — operator must fill it in.
-# Flag the file so systemd refuses to start until it's replaced.
 if ! grep -q '__OPENROUTER_API_KEY__' "$ENV_TMP"; then
   die "env template is missing __OPENROUTER_API_KEY__ placeholder"
+fi
+
+# If the caller passed a key, substitute it now. sed delimiter is | so the
+# key must not contain |. OpenRouter keys are base64/hex-ish so this is safe
+# in practice; still, validate.
+if [ -n "$OR_KEY" ]; then
+  case "$OR_KEY" in
+    *'|'*) die "--openrouter-key contains '|', refusing to substitute safely" ;;
+  esac
+  sed -i "s|__OPENROUTER_API_KEY__|${OR_KEY}|" "$ENV_TMP"
 fi
 
 # ── render site file ─────────────────────────────────────────────────────
@@ -168,12 +198,25 @@ if id juno >/dev/null 2>&1; then
   chown -R juno:juno "$INSTANCE_DIR"
 fi
 
+# ── pre-create per-site caddy log with caddy:caddy ownership ────────────
+# If caddy starts a site whose log target doesn't exist, it creates the file
+# as its runtime user; but if the file has ever been created by something
+# else (root from a manual test, a previous install running as a different
+# user), the reload will fail with "permission denied". Own it up front.
+CADDY_LOG="/var/log/caddy/juno-${NAME}.log"
+mkdir -p /var/log/caddy
+touch "$CADDY_LOG"
+if id caddy >/dev/null 2>&1; then
+  chown caddy:caddy "$CADDY_LOG"
+fi
+chmod 0640 "$CADDY_LOG"
+
 # ── enable + start the unit ──────────────────────────────────────────────
 systemctl daemon-reload
 systemctl enable "juno@${NAME}.service" >/dev/null
 
-# Only start if the operator has already filled in the API key; otherwise
-# leave it disabled-but-queued so the first-start isn't a crash loop.
+# Only start if the operator has filled in the API key; otherwise leave it
+# disabled-but-queued so the first-start isn't a crash loop.
 if grep -q '__OPENROUTER_API_KEY__' "$ENV_FILE"; then
   echo "juno-add: env file still contains __OPENROUTER_API_KEY__ placeholder."
   echo "           Edit ${ENV_FILE} and set OPENROUTER_API_KEY, then run:"
@@ -182,7 +225,12 @@ else
   systemctl start "juno@${NAME}.service"
 fi
 
-systemctl reload caddy || systemctl restart caddy
+# Caddy reload: bounded timeout, fall back to a full restart on failure so a
+# stuck admin-API handshake doesn't leave caddy in a half-loaded state.
+if ! timeout 10 systemctl reload caddy; then
+  echo "juno-add: caddy reload timed out or failed; restarting caddy" >&2
+  systemctl restart caddy
+fi
 
 cat <<EOF
 
