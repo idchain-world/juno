@@ -2,16 +2,22 @@ import { Hono } from 'hono';
 import type { Env } from '../env.js';
 
 // HTTP MCP shim. JSON-RPC 2.0 over a single POST endpoint.
-// Exposes exactly one tool: `talk`. Calls relay through the already-running
-// /talk HTTP route via localhost — they do NOT import openrouter/inbox/budget
-// modules. That keeps the MCP boundary thin: any hardening we add to /talk
-// (rate-limit, body-size, budget, inbox) automatically applies to MCP callers
-// too.
 //
-// No `news` tool and no inbox read is ever exposed via MCP. That lets us
-// run /mcp on the public listener without fear of random callers writing
-// spam into the inbox. Operators who need to post news should reach /news
-// directly on the operator listener via SSH tunnel.
+// Exposes three tools, all public (no Bearer). All session-scoped writes
+// and reads require a `session_id` the caller already owns — the same
+// contract as the REST /talk and /news public endpoints. Calls relay
+// through the already-running REST routes via localhost, so any hardening
+// (rate-limit, body-size, budget, inbox, session validation) applies to
+// MCP callers for free.
+//
+// Tools:
+//   talk      — sync chat, mints a session on first turn, threads on follow-ups
+//   news      — append an item to the caller's session news (session_id required)
+//   get_news  — list items tagged to the caller's session_id only
+//
+// No tool ever exposes another session's data or grants operator-level
+// visibility. Operators who want to see everything must reach the /inbox
+// + operator /news routes directly via SSH tunnel.
 
 type JsonRpcId = number | string | null;
 
@@ -55,22 +61,77 @@ function toolsList(env: Env) {
           required: ['message'],
         },
       },
+      {
+        name: 'news',
+        description:
+          `Append a news item to ${env.agentName}'s inbox, tagged to your session. ` +
+          'Fire-and-forget; returns only an id + timestamp. A valid session_id is required — ' +
+          'you must have already called `talk` at least once on the same session to have one. ' +
+          'Items are scoped to your session: other callers cannot read what you posted.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session_id: {
+              type: 'string',
+              description: 'UUID from a prior `talk` call. Required.',
+            },
+            from: { type: 'string', description: 'Sender identifier. Required.' },
+            message: { type: 'string', description: 'News message. Required.' },
+            type: { type: 'string', description: "Optional. Defaults to 'notify'." },
+            data: { type: 'object', description: 'Optional free-form payload.' },
+          },
+          required: ['session_id', 'from', 'message'],
+        },
+      },
+      {
+        name: 'get_news',
+        description:
+          `Read items from ${env.agentName}'s news feed that are tagged to your session. ` +
+          'Returns only your own items — you cannot read other callers\' news. ' +
+          'Unknown session_id returns an empty list (not an error) so callers cannot probe for session existence.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session_id: {
+              type: 'string',
+              description: 'UUID from a prior `talk` call. Required.',
+            },
+            since_id: {
+              type: 'number',
+              description: 'Optional. Return only items with id > since_id. Omit or 0 for all.',
+            },
+            limit: {
+              type: 'number',
+              description: 'Optional. Max items to return, 1..500. Defaults to 100.',
+            },
+          },
+          required: ['session_id'],
+        },
+      },
     ],
   };
 }
 
-async function relay(env: Env, body: unknown) {
-  // Loopback to the public listener's /talk. No egress.
-  const url = `http://127.0.0.1:${env.port}/talk`;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+async function relayPost(env: Env, path: '/talk' | '/news', body: unknown) {
+  // Loopback to the public listener. No egress.
+  const url = `http://127.0.0.1:${env.port}${path}`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
   const text = await resp.text();
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    parsed = { raw: text };
-  }
+  try { parsed = JSON.parse(text); } catch { parsed = { raw: text }; }
+  return { ok: resp.ok, status: resp.status, body: parsed };
+}
+
+async function relayGet(env: Env, path: string) {
+  const url = `http://127.0.0.1:${env.port}${path}`;
+  const resp = await fetch(url, { method: 'GET' });
+  const text = await resp.text();
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { parsed = { raw: text }; }
   return { ok: resp.ok, status: resp.status, body: parsed };
 }
 
@@ -89,11 +150,6 @@ function toolResult(content: unknown, isError = false) {
 export function mcpRoutes(env: Env): Hono {
   const app = new Hono();
 
-  // MCP is public. The only tool exposed is `talk`, which matches the
-  // public surface of /talk — same rate limit and budget apply. The `news`
-  // tool is intentionally not exposed here so random callers cannot write
-  // to the inbox. Operators who need to push news should use the operator
-  // listener's /news endpoint directly (SSH-tunneled, Bearer-gated).
   app.post('/mcp', async (c) => {
     let req: JsonRpcRequest;
     try {
@@ -110,7 +166,7 @@ export function mcpRoutes(env: Env): Hono {
         return c.json(rpcResult(req.id, {
           protocolVersion: PROTOCOL_VERSION,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: env.agentName, version: '0.1.0' },
+          serverInfo: { name: env.agentName, version: env.version },
         }));
 
       case 'tools/list':
@@ -131,7 +187,34 @@ export function mcpRoutes(env: Env): Hono {
           if (!message.trim()) {
             return c.json(rpcResult(req.id, toolResult({ error: 'missing_message' }, true)));
           }
-          const relayed = await relay(env, { message, from, session_id });
+          const relayed = await relayPost(env, '/talk', { message, from, session_id });
+          return c.json(rpcResult(req.id, toolResult(relayed.body, !relayed.ok)));
+        }
+
+        if (name === 'news') {
+          const session_id = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+          const from = typeof args.from === 'string' ? args.from.trim() : '';
+          const message = typeof args.message === 'string' ? args.message.trim() : '';
+          const type = typeof args.type === 'string' ? args.type : undefined;
+          const data = args.data;
+          if (!session_id) return c.json(rpcResult(req.id, toolResult({ error: 'missing_session_id' }, true)));
+          if (!from) return c.json(rpcResult(req.id, toolResult({ error: 'missing_from' }, true)));
+          if (!message) return c.json(rpcResult(req.id, toolResult({ error: 'missing_message' }, true)));
+          const relayed = await relayPost(env, '/news', { session_id, from, message, type, data });
+          return c.json(rpcResult(req.id, toolResult(relayed.body, !relayed.ok)));
+        }
+
+        if (name === 'get_news') {
+          const session_id = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+          if (!session_id) return c.json(rpcResult(req.id, toolResult({ error: 'missing_session_id' }, true)));
+          const sinceId = typeof args.since_id === 'number' && Number.isFinite(args.since_id)
+            ? args.since_id
+            : 0;
+          const limit = typeof args.limit === 'number' && Number.isFinite(args.limit)
+            ? Math.max(1, Math.min(500, args.limit))
+            : 100;
+          const qs = `?session_id=${encodeURIComponent(session_id)}&since_id=${sinceId}&limit=${limit}`;
+          const relayed = await relayGet(env, `/news${qs}`);
           return c.json(rpcResult(req.id, toolResult(relayed.body, !relayed.ok)));
         }
 
