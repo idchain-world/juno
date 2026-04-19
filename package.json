@@ -1,8 +1,26 @@
 {
-  "name": "public-agent",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Lightweight public-facing REST-AP agent backed by OpenRouter.",
+  "name": "@idchain/juno",
+  "version": "0.2.0",
+  "private": false,
+  "description": "Juno — the public-facing, capability-limited agent runtime for the id-agents framework. Hono + OpenRouter, guarded and rate-limited, safe to point at the internet.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/idchain-world/juno.git"
+  },
+  "homepage": "https://github.com/idchain-world/juno",
+  "bugs": {
+    "url": "https://github.com/idchain-world/juno/issues"
+  },
+  "keywords": [
+    "id-agents",
+    "juno",
+    "agent",
+    "rest-ap",
+    "dmz",
+    "public-agent",
+    "openrouter",
+    "hono"
+  ],
   "license": "MIT",
   "type": "module",
   "main": "dist/server.js",
