@@ -1,0 +1,23 @@
+# Rendered by juno-add.sh to /etc/caddy/juno.d/__NAME__.caddy.
+# __DOMAIN__ is the public hostname. __PUBLIC_PORT__ is the
+# per-instance public port on 127.0.0.1 (operator port is NOT proxied;
+# reach it via SSH tunnel).
+
+__DOMAIN__ {
+    encode gzip
+
+    reverse_proxy 127.0.0.1:__PUBLIC_PORT__
+
+    # Belt-and-suspenders: even if PUBLIC_AGENT_HOST gets misconfigured,
+    # refuse operator /inbox from the public interface.
+    @operator path /inbox*
+    respond @operator 404
+
+    log {
+        output file /var/log/caddy/juno-__NAME__.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+        format console
+    }
+}

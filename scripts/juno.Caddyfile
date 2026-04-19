@@ -1,0 +1,11 @@
+# Top-level Caddyfile — install as /etc/caddy/Caddyfile.
+#
+# Per-instance site blocks live in /etc/caddy/juno.d/<name>.caddy and
+# are rendered by scripts/juno-add.sh. Nothing here is instance-specific.
+
+{
+    # Global options go here if needed (ACME email, servers block, etc).
+    # email you@example.com
+}
+
+import /etc/caddy/juno.d/*.caddy

@@ -1,307 +1,236 @@
-# public-agent Deployment
+# Juno Deployment
 
-## Overview
+Juno runs as one or many instances on a single Hetzner VPS. Each instance is
+its own systemd unit (`juno@<name>`), own `/etc/juno/<name>.env`, own
+Caddy site block, own `/opt/juno/instances/<name>/{data,knowledge}` tree,
+and its own `PUBLIC_AGENT_PORT` / `OPERATOR_PORT` pair on `127.0.0.1`.
 
-public-agent runs on a VPS behind TLS. The `/talk` endpoint is public — any
-caller can reach it subject to IP rate limiting and daily token budget. Operator
-endpoints (`/inbox`, `/news`, `/mcp`) bind to `127.0.0.1` and are accessed only
-via SSH tunnel; they are not exposed through the reverse proxy. Authentication is
-enforced by `PUBLIC_AGENT_AUTH_KEY`; without it, operator endpoints reject every
-request unless `ALLOW_PUBLIC_UNAUTHENTICATED=true` is set (dev only).
+Shared across all instances on the box: the Node runtime, the code at
+`/opt/juno`, Caddy with automatic TLS, and the `juno` system user.
+
+## Layout
+
+```
+/opt/juno/                           # code — one clone, rolls all instances forward
+  dist/  node_modules/  scripts/
+  instances/
+    <name>/
+      data/                          # inbox, sessions, budget state
+      knowledge/                     # per-instance KB markdown
+/etc/juno/
+  <name>.env                         # one per instance, 0640 root:juno
+/etc/systemd/system/
+  juno@.service                      # templated unit
+/etc/caddy/
+  Caddyfile                          # top-level, does `import juno.d/*.caddy`
+  juno.d/
+    <name>.caddy                     # one site block per instance
+/var/lib/juno/
+  alloc.lock                         # flock for port allocation in juno-add.sh
+```
+
+Only ports 22, 80, and 443 are open externally. Every juno public/operator
+port lives on `127.0.0.1` and is reached by Caddy (public surface) or by an
+SSH tunnel to the operator port (inbox, news, mcp).
 
 ## Prerequisites
 
-- Node 22 or later on the VPS.
-- A domain with DNS A / AAAA records pointing to the VPS.
-- An OpenRouter API key (`platform.openrouter.ai`).
-- (Optional) A bearer key for operator endpoint auth — generate with
-  `openssl rand -hex 32`.
+- Ubuntu 24.04 VPS (Hetzner CX22 or larger — each juno reserves 512 MB by
+  default; see `MemoryMax` in `scripts/juno@.service`).
+- DNS records pointing each instance's domain at the VPS.
+- One OpenRouter API key per instance (recommended — shared keys give you
+  weak attribution and one tenant can burn the common budget).
+- SSH key access as `root` or a sudo-capable user.
 
-## Environment file
+## Bootstrap (once per VPS)
 
-Place a file at `/etc/public-agent.env`. The `systemd` unit reads it via
-`EnvironmentFile=`. File format: one `KEY=value` per line, no quoting needed.
+```bash
+ssh root@<vps-ip>
+curl -fsSL https://raw.githubusercontent.com/idchain-world/juno/main/scripts/bootstrap.sh | bash
+reboot
+```
 
-### Required
+`bootstrap.sh` installs Node 22, Caddy, UFW, clones the repo to `/opt/juno`,
+installs the templated systemd unit, and creates `/etc/juno`, `/etc/caddy/juno.d`,
+and `/var/lib/juno`. It is idempotent — re-run after `git pull` to refresh the
+unit file and rebuild code.
+
+## Add a juno instance
+
+```bash
+sudo /opt/juno/scripts/juno-add.sh <name> <domain>
+# e.g. sudo /opt/juno/scripts/juno-add.sh docs docs.idagents.ai
+```
+
+What `juno-add.sh` does, under a `flock`:
+
+1. Validates `<name>` (lowercase alnum + dash, 1–32 chars) and `<domain>`.
+2. Rejects duplicate names or domains already served by another instance.
+3. Allocates the next free port pair from the 4200–4398 range, verifying both
+   with existing env files and with `ss` (not already bound on the box).
+4. Generates a fresh `PUBLIC_AGENT_AUTH_KEY` with `openssl rand -hex 32`.
+5. Renders `/etc/juno/<name>.env` from `scripts/juno.env.template` (0640
+   root:juno) with the allocated ports, auth key, and paths substituted in.
+   The `OPENROUTER_API_KEY` placeholder is left for the operator.
+6. Renders `/etc/caddy/juno.d/<name>.caddy`, runs `caddy validate`, rolls
+   back on failure.
+7. Creates `/opt/juno/instances/<name>/{data,knowledge}` (owned by `juno`).
+8. Enables `juno@<name>.service`. Starts it immediately **only if** the
+   API key placeholder has already been replaced; otherwise the unit stays
+   enabled-but-stopped so the first boot isn't a crash loop.
+9. Reloads Caddy.
+
+After `juno-add.sh` returns, edit `/etc/juno/<name>.env`, replace
+`__OPENROUTER_API_KEY__` with a real key, and:
+
+```bash
+sudo systemctl start juno@<name>
+curl -sS https://<domain>/health
+```
+
+## List instances
+
+```bash
+sudo /opt/juno/scripts/juno-list.sh
+```
+
+Reads `/etc/juno/*.env` for the source of truth on name/domain/ports and
+cross-references `systemctl` for live status and PID.
+
+## Remove an instance
+
+```bash
+# Default: stop + disable, remove env and site file, keep the data dir.
+sudo /opt/juno/scripts/juno-remove.sh <name>
+
+# Destroy the data dir too. Script asks you to retype the instance name.
+sudo /opt/juno/scripts/juno-remove.sh <name> --purge
+```
+
+Data preservation is the default so an accidental removal is recoverable.
+`--purge` requires interactive confirmation (retyping the instance name).
+
+## Per-instance environment
+
+See [`scripts/juno.env.template`](../scripts/juno.env.template) for the full
+template rendered by `juno-add.sh`. The fields the operator must fill after
+provisioning are:
 
 | Variable | Purpose |
 |---|---|
-| `OPENROUTER_API_KEY` | OpenRouter bearer key. Required. |
-| `OPENROUTER_MODEL` | Model identifier, e.g. `openai/gpt-4o-mini`. Required. |
+| `OPENROUTER_API_KEY` | OpenRouter bearer key. Prefer one key per instance. |
+| `OPENROUTER_MODEL` | Default `google/gemini-2.5-flash`. |
 
-### Operator security
+Budget and rate-limit defaults are conservative (`MAX_TOKENS_PER_DAY=100000`,
+`TALK_RATE_LIMIT_PER_MIN=20`). Raise deliberately; leaving them unset means
+any one instance can burn the whole VPS budget.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `PUBLIC_AGENT_AUTH_KEY` | (none) | Bearer token for `/inbox`, `/news`, `/mcp`. If unset, those endpoints return 401 unless the dev flag below is set. |
-| `ALLOW_PUBLIC_UNAUTHENTICATED` | `false` | Set `true` only in local development to open operator endpoints without a key. Never set in production. |
+## Per-instance resource limits
 
-### Budgets and deadlines
+`scripts/juno@.service` sets, per instance:
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `MAX_TOKENS_PER_DAY` | `0` (unlimited) | Hard daily token ceiling across all calls. |
-| `MAX_REPLY_TOKENS` | `1024` | Maximum completion tokens per main-LLM call. |
-| `UPSTREAM_DEADLINE_MS` | `45000` | Per-attempt AbortController deadline for OpenRouter fetches. |
-| `MAX_RETRY_AFTER_MS` | `10000` | Maximum ms honoured from a provider `Retry-After` header. |
-| `REQUEST_DEADLINE_MS` | `60000` | Total wall-clock deadline per `/talk` request. Exceeded requests return 503. |
+| Limit | Default |
+|---|---|
+| `MemoryMax` | 512 MB |
+| `MemoryHigh` | 384 MB |
+| `CPUWeight` | 100 |
+| `TasksMax` | 256 |
+| `LimitNOFILE` | 4096 |
 
-### Limits
+Override per instance with a drop-in:
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `MAX_MESSAGE_CHARS` | `8000` | Maximum characters in a single user message. |
-| `TALK_RATE_LIMIT_PER_MIN` | `10` | Token-bucket rate per IP per minute on `/talk`. |
-| `MAX_SESSIONS` | `100` | Maximum concurrent in-memory sessions. |
-| `SESSION_IDLE_MINUTES` | `60` | Evict sessions idle for this many minutes. |
-| `MAX_TURNS_PER_SESSION` | `50` | Maximum user turns per session before forcing a new one. |
-
-### Paths
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `PUBLIC_AGENT_DATA_DIR` | `/app/data` | Directory for inbox entries, budget state, session artifacts. |
-| `PUBLIC_AGENT_KNOWLEDGE_DIR` | `/app/knowledge` | Directory for Markdown knowledge files served to the model. |
-
-### Sample `/etc/public-agent.env`
-
-```
-OPENROUTER_API_KEY=sk-or-...
-OPENROUTER_MODEL=openai/gpt-4o-mini
-PUBLIC_AGENT_AUTH_KEY=change-this-to-a-random-value
-
-MAX_TOKENS_PER_DAY=500000
-MAX_REPLY_TOKENS=1024
-UPSTREAM_DEADLINE_MS=45000
-MAX_RETRY_AFTER_MS=10000
-REQUEST_DEADLINE_MS=60000
-
-TALK_RATE_LIMIT_PER_MIN=10
-MAX_SESSIONS=100
-SESSION_IDLE_MINUTES=60
-MAX_TURNS_PER_SESSION=50
-MAX_MESSAGE_CHARS=8000
-
-PUBLIC_AGENT_DATA_DIR=/opt/public-agent/data
-PUBLIC_AGENT_KNOWLEDGE_DIR=/opt/public-agent/knowledge
-```
-
-## systemd unit
-
-Save as `/etc/systemd/system/public-agent.service`, then `systemctl daemon-reload`
-and `systemctl enable --now public-agent`.
-
-```ini
-[Unit]
-Description=public-agent — DMZ AI assistant
-After=network-online.target
-Wants=network-online.target
-
+```bash
+sudo systemctl edit juno@docs
+# write the overrides
 [Service]
-# Read secrets from the env file; never inline them in this unit.
-EnvironmentFile=/etc/public-agent.env
-
-WorkingDirectory=/opt/public-agent
-ExecStart=/usr/bin/node dist/server.js
-Restart=always
-RestartSec=5
-
-# Security hardening directives
-# Run as an ephemeral user with no home dir or persistent UID.
-DynamicUser=yes
-# Mount /usr, /boot, /etc read-only; prevent writing outside allowed paths.
-ProtectSystem=strict
-# Allow only the two data directories the service actually writes to.
-ReadWritePaths=/opt/public-agent/data /opt/public-agent/knowledge
-# Prevent the process from gaining new privileges via setuid/setgid.
-NoNewPrivileges=true
-# Restrict outbound sockets to IPv4/IPv6 only; no Unix sockets or raw packets.
-RestrictAddressFamilies=AF_INET AF_INET6
-# Block kernel calls not needed by a Node.js HTTP service.
-SystemCallFilter=@system-service
-# Prevent access to physical device files.
-PrivateDevices=yes
-# Separate /tmp namespace so the process cannot read other services' temp files.
-PrivateTmp=yes
-
-[Install]
-WantedBy=multi-user.target
+MemoryMax=1G
 ```
 
-Hardening notes:
+Systemd writes to `/etc/systemd/system/juno@docs.service.d/override.conf`.
 
-- `DynamicUser=yes` — systemd allocates a throw-away UID per invocation; no
-  home directory, no /etc/passwd entry. Files written under `ReadWritePaths` are
-  owned by the dynamic UID and survive restarts.
-- `ProtectSystem=strict` — the entire filesystem tree is read-only except paths
-  in `ReadWritePaths`. Prevents accidental writes outside designated dirs.
-- `ReadWritePaths` — limits writable scope to the data and knowledge directories.
-  Add additional paths only when a new feature genuinely requires them.
-- `NoNewPrivileges=true` — blocks execve-based privilege escalation.
-- `RestrictAddressFamilies` — blocks Unix socket and raw-packet egress; Node
-  only needs TCP/UDP for HTTP and DNS.
-- `SystemCallFilter=@system-service` — whitelists the syscall set appropriate for
-  a daemon; blocks ptrace, module loading, clock setting, etc.
-- `PrivateDevices=yes` — hides `/dev/sd*`, `/dev/mem`, etc. from the process.
-- `PrivateTmp=yes` — gives the process an isolated `/tmp` namespace.
+## Operator access
 
-## Reverse proxy
+Operator endpoints (`/inbox`, `/news`, `/mcp`) bind to `127.0.0.1:<operator-port>`
+and are NOT proxied by Caddy. The Caddyfile also 404s any `/inbox*` coming
+through the public surface as a second line of defence.
 
-The reverse proxy terminates TLS and forwards only the public surface. Operator
-endpoints (`/inbox`, `/news`, `/mcp`) are NOT proxied — operators reach them via
-SSH tunnel to `127.0.0.1:4200`.
+Reach the operator port from your laptop via SSH tunnel:
 
-### Caddy
+```bash
+# Read the operator port for the instance:
+sudo /opt/juno/scripts/juno-list.sh
 
-```
-your.domain {
-    # TLS is automatic via Let's Encrypt.
-
-    # Public surface — forward to public-agent.
-    reverse_proxy /talk 127.0.0.1:4200
-    reverse_proxy /healthz 127.0.0.1:4200
-    reverse_proxy /.well-known/* 127.0.0.1:4200
-
-    # Operator endpoints are NOT exposed here. Access them via SSH tunnel:
-    #   ssh -L 4200:127.0.0.1:4200 user@vps
-    # Then curl http://localhost:4200/inbox
-}
+# Then tunnel:
+ssh -L 4201:127.0.0.1:4201 root@<vps-ip>
+curl -H "Authorization: Bearer $PUBLIC_AGENT_AUTH_KEY" http://localhost:4201/inbox
 ```
 
-### nginx
+The auth key is in the instance's env file.
 
-```nginx
-server {
-    listen 443 ssl http2;
-    server_name your.domain;
+## Upgrades
 
-    ssl_certificate     /etc/letsencrypt/live/your.domain/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/your.domain/privkey.pem;
+All instances share `/opt/juno` code. Upgrading the runtime rolls every
+instance forward at once:
 
-    # Pass real client IP so the rate limiter can use it.
-    set_real_ip_from  127.0.0.1;
-    real_ip_header    X-Forwarded-For;
-    real_ip_recursive on;
-
-    # Public surface.
-    location /talk {
-        proxy_pass http://127.0.0.1:4200;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-
-    location /healthz {
-        proxy_pass http://127.0.0.1:4200;
-    }
-
-    location /.well-known/ {
-        proxy_pass http://127.0.0.1:4200;
-    }
-
-    # Operator endpoints (/inbox, /news, /mcp) are not proxied.
-    # Access via SSH tunnel only:
-    #   ssh -L 4200:127.0.0.1:4200 user@vps
-}
-
-server {
-    listen 80;
-    server_name your.domain;
-    return 301 https://$host$request_uri;
-}
+```bash
+ssh root@<vps-ip>
+cd /opt/juno
+sudo -u juno git pull --ff-only
+sudo -u juno npm ci --omit=dev
+sudo -u juno npm run build
+sudo systemctl restart 'juno@*'
 ```
 
-Set `TRUSTED_PROXY=true` in the env file when using either proxy so the agent
-reads the real client IP from `X-Forwarded-For` for rate limiting.
+If per-instance version pinning is ever needed, switch to a
+`/opt/juno/releases/<sha>/` layout with a `current` symlink. It is not
+needed today.
 
 ## Key rotation
 
-### PUBLIC_AGENT_AUTH_KEY
-
-1. Generate a new value: `openssl rand -hex 32`.
-2. Update `/etc/public-agent.env`.
-3. `systemctl restart public-agent`.
-4. Distribute the new key to any tools or scripts that use the operator endpoints.
-
-Rotate quarterly or immediately on suspected compromise.
-
-### OPENROUTER_API_KEY
-
-1. Generate a new key in the OpenRouter dashboard.
-2. Update `/etc/public-agent.env`.
-3. `systemctl restart public-agent`.
-4. Revoke the old key in the OpenRouter dashboard.
-
-### Registrar / on-chain key
-
-The registrar key used for Phase 4 on-chain identity is a separate concern.
-See the main id-agents documentation — it is not managed by this service.
-
-## Incident disable runbook
-
-**Immediate — stop the service:**
+### Per-instance `PUBLIC_AGENT_AUTH_KEY`
 
 ```bash
-systemctl stop public-agent
+sudo openssl rand -hex 32   # copy output
+sudoedit /etc/juno/<name>.env
+sudo systemctl restart juno@<name>
 ```
 
-Takes effect within seconds. All in-flight requests are dropped.
+### Per-instance `OPENROUTER_API_KEY`
 
-**Deregister from the manager:**
+Rotate in the OpenRouter dashboard, paste into `/etc/juno/<name>.env`,
+restart the unit, then revoke the old key.
 
-In the id-agents CLI on your local machine:
-
-```
-/public remove your.domain
-```
-
-This removes the manager registry entry. The on-chain record is preserved per
-Phase 4 Q4 provenance policy — do not attempt to burn the token.
-
-**If the service must stay up but abuse is ongoing:**
-
-1. Rotate `PUBLIC_AGENT_AUTH_KEY` (see above) to invalidate any operator sessions.
-2. Clear active user sessions: stop the service, remove
-   `$PUBLIC_AGENT_DATA_DIR/sessions.json` if it exists, restart.
-3. Tighten rate limiting: set `TALK_RATE_LIMIT_PER_MIN=1` in the env file.
-4. `systemctl restart public-agent`.
-
-## Logs and rotation
-
-Logs go to the systemd journal by default:
+## Logs
 
 ```bash
-journalctl -u public-agent -f          # tail live
-journalctl -u public-agent --since today
+journalctl -u juno@<name> -f
+journalctl -u juno@<name> --since today
 ```
 
-**File-based logging** — add to the `[Service]` section of the unit file:
+Caddy writes per-site access logs to `/var/log/caddy/juno-<name>.log` with
+50 MB rotation, 5 files kept.
 
-```ini
-StandardOutput=append:/var/log/public-agent/agent.log
-StandardError=append:/var/log/public-agent/agent.log
-```
+## Incident disable
 
-Create the directory first and set ownership:
+**Stop one instance immediately:**
 
 ```bash
-mkdir -p /var/log/public-agent
-# DynamicUser means the UID is ephemeral; use group-based access or
-# pre-create with world-writable for simplicity in dev setups.
-chmod 755 /var/log/public-agent
+sudo systemctl stop juno@<name>
 ```
 
-**logrotate** — save as `/etc/logrotate.d/public-agent`:
+**Stop every juno on the box:**
 
-```
-/var/log/public-agent/agent.log {
-    size 100M
-    rotate 7
-    compress
-    missingok
-    copytruncate
-    notifempty
-}
+```bash
+sudo systemctl stop 'juno@*'
 ```
 
-`copytruncate` truncates the live file rather than moving it, so the running
-process keeps writing without needing a signal or restart.
+Takes effect within seconds. In-flight requests are dropped.
+
+Deregister from the id-agents manager from your local CLI:
+
+```
+/public remove <domain>
+```
+
+If the instance must stay up but abuse is ongoing, drop
+`TALK_RATE_LIMIT_PER_MIN` to `1` in its env file and restart the unit.
