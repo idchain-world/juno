@@ -11,11 +11,12 @@ docs.idagents.ai {
     reverse_proxy 127.0.0.1:4200
 
     # Belt-and-suspenders: even if PUBLIC_AGENT_HOST gets misconfigured,
-    # we refuse operator paths from the public interface.
-    # /mcp is intentionally NOT in this list — it is exposed publicly on the
-    # public listener with Bearer auth so MCP clients (Claude Code, Cursor)
-    # can reach it without an SSH tunnel.
-    @operator path /inbox* /news*
+    # we refuse operator-only paths from the public interface. /mcp and
+    # /news are intentionally NOT in this list — both are exposed publicly
+    # on the public Hono listener. /news enforces session scoping itself
+    # (session_id required; callers only see their own items), and /mcp
+    # exposes only the `talk` tool. Only the operator /inbox stays 404 here.
+    @operator path /inbox*
     respond @operator 404
 
     log {

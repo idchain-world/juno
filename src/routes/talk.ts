@@ -7,7 +7,7 @@ import { writeInboxEntry, makeInboxId, type InboxEntry } from '../lib/inbox.js';
 import { requireAuthOrPublicTalk } from '../lib/auth.js';
 import { clientIp, tokenBucket } from '../lib/rate-limit.js';
 import { isOverBudget, reserveTokens, reconcileTokens } from '../lib/budget.js';
-import { createSessionStore, type Session } from '../lib/sessions.js';
+import type { Session, SessionStore } from '../lib/sessions.js';
 import { classifyMessage, type GuardVerdict } from '../lib/guard.js';
 import { REFUSAL_REPLY, UNDER_REVIEW_REPLY, mainSystemPrompt } from '../lib/prompts.js';
 import {
@@ -358,9 +358,12 @@ function estimatePromptTokens(messages: ChatMessage[]): number {
   return Math.ceil(chars / 4);
 }
 
-export function talkRoutes(env: Env, knowledge: KnowledgeManifest): Hono {
+export function talkRoutes(
+  env: Env,
+  knowledge: KnowledgeManifest,
+  sessions: SessionStore,
+): Hono {
   const app = new Hono();
-  const sessions = createSessionStore(env);
   const talkSchema = buildTalkSchema(env);
 
   const resolve = (c: Context) => clientIp(c, getConnInfo, env.trustedProxy);

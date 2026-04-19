@@ -5,12 +5,14 @@ import { loadEnv } from './env.js';
 import { wellknownRoutes } from './routes/wellknown.js';
 import { talkRoutes } from './routes/talk.js';
 import { newsRoutes } from './routes/news.js';
+import { publicNewsRoutes } from './routes/public-news.js';
 import { inboxRoutes } from './routes/inbox.js';
 import { mcpRoutes } from './routes/mcp.js';
 import { healthRoutes } from './routes/health.js';
 import { identityRoutes } from './routes/identity.js';
 import { loadManifest } from './lib/knowledge.js';
 import { purgeOldArtifacts } from './lib/tool-truncate.js';
+import { createSessionStore } from './lib/sessions.js';
 
 const env = loadEnv();
 
@@ -46,19 +48,25 @@ const oversize = (maxSize: number) =>
       c.json({ error: 'payload_too_large', limit: maxSize }, 413),
   });
 
-// ── Public listener: internet-reachable surfaces (/talk, /health, /identity, /.well-known/*, /mcp) ──
-// /mcp is also mounted here so MCP clients (Claude Code, Cursor, etc.) can reach the agent
-// without an SSH tunnel. The route's own requireAuth middleware still demands the Bearer
-// token, so behaviour matches the operator listener — only the transport differs.
-// The MCP shim exposes exactly two tools: `talk` (sync reply) and `news` (fire-and-forget).
-// No inbox/news-feed read tool is ever exposed via MCP.
+// Single session store shared by /talk and the session-scoped /news.
+// Disk-backed under <dataDir>/sessions/ so a restart does not nuke callers'
+// conversations. Default idle TTL is 24h (SESSION_IDLE_MINUTES).
+const sessions = createSessionStore(env);
+
+// ── Public listener: internet-reachable surfaces ──
+// /talk  — sync chat, rate-limited. Public by default (PROTECT_TALK to gate).
+// /news  — session-scoped; read/write your own news by session_id only.
+// /mcp   — public, JSON-RPC, exposes only the `talk` tool.
+// /health, /identity, /.well-known/* — discovery + status, always public.
 const publicApp = new Hono();
 publicApp.on('POST', '/talk', oversize(TALK_BODY_LIMIT));
+publicApp.on('POST', '/news', oversize(NEWS_BODY_LIMIT));
 publicApp.on('POST', '/mcp', oversize(MCP_BODY_LIMIT));
 publicApp.route('/', wellknownRoutes(env));
 publicApp.route('/', healthRoutes(env));
 publicApp.route('/', identityRoutes(env));
-publicApp.route('/', talkRoutes(env, knowledge));
+publicApp.route('/', talkRoutes(env, knowledge, sessions));
+publicApp.route('/', publicNewsRoutes(env, sessions));
 publicApp.route('/', mcpRoutes(env));
 publicApp.all('*', (c) => c.json({ error: 'not_found', path: c.req.path }, 404));
 

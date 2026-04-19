@@ -9,6 +9,14 @@ export interface NewsItem {
   from: string;
   message: string;
   data?: unknown;
+  /**
+   * UUIDv4 tying this item to a /talk session. Items posted via the public
+   * /news endpoint always have a session_id (the public endpoint requires
+   * one). Items posted via the operator /news may omit it. GET /news on the
+   * public listener filters by session_id so callers only ever see their
+   * own.
+   */
+  session_id?: string;
 }
 
 function logPath(env: Env): string {
@@ -60,17 +68,24 @@ export function appendNews(
     from: item.from,
     message: item.message,
     ...(item.data !== undefined ? { data: item.data } : {}),
+    ...(item.session_id ? { session_id: item.session_id } : {}),
   };
   fs.appendFileSync(logPath(env), JSON.stringify(full) + '\n');
   return full;
 }
 
-export function tailNews(env: Env, sinceId: number, limit: number): { items: NewsItem[]; next_since_id: number } {
+export function tailNews(
+  env: Env,
+  sinceId: number,
+  limit: number,
+  opts?: { sessionId?: string },
+): { items: NewsItem[]; next_since_id: number } {
   const file = logPath(env);
   if (!fs.existsSync(file)) return { items: [], next_since_id: sinceId };
   const raw = fs.readFileSync(file, 'utf8');
   const items: NewsItem[] = [];
   let maxId = sinceId;
+  const sessionFilter = opts?.sessionId;
   for (const line of raw.split('\n')) {
     if (!line) continue;
     let item: NewsItem;
@@ -79,10 +94,10 @@ export function tailNews(env: Env, sinceId: number, limit: number): { items: New
     } catch {
       continue;
     }
-    if (item.id > sinceId) {
-      items.push(item);
-      if (item.id > maxId) maxId = item.id;
-    }
+    if (item.id <= sinceId) continue;
+    if (sessionFilter && item.session_id !== sessionFilter) continue;
+    items.push(item);
+    if (item.id > maxId) maxId = item.id;
   }
   const sliced = items.slice(0, limit);
   const nextSince = sliced.length > 0 ? sliced[sliced.length - 1]!.id : sinceId;
