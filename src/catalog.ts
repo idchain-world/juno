@@ -16,7 +16,7 @@ export function buildCatalog(env: Env) {
     capabilities: ['talk', 'news', 'mcp', 'search_knowledge', 'read_knowledge'],
     auth: {
       talk: env.protectTalk ? 'bearer' : 'none',
-      mcp: 'bearer',
+      mcp: 'none',
       operator: 'ssh-tunnel',
     },
     limits: {

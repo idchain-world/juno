@@ -1,13 +1,17 @@
 import { Hono } from 'hono';
 import type { Env } from '../env.js';
-import { requireAuth } from '../lib/auth.js';
 
 // HTTP MCP shim. JSON-RPC 2.0 over a single POST endpoint.
-// Exposes exactly two tools: `talk` and `news`. Both relay through the
-// already-running /talk and /news HTTP routes via localhost — they do NOT
-// import openrouter/inbox/budget modules. That keeps the MCP boundary thin:
-// any hardening we add to the REST routes (auth, rate-limit, body-size,
-// budget, inbox) automatically applies to MCP callers too.
+// Exposes exactly one tool: `talk`. Calls relay through the already-running
+// /talk HTTP route via localhost — they do NOT import openrouter/inbox/budget
+// modules. That keeps the MCP boundary thin: any hardening we add to /talk
+// (rate-limit, body-size, budget, inbox) automatically applies to MCP callers
+// too.
+//
+// No `news` tool and no inbox read is ever exposed via MCP. That lets us
+// run /mcp on the public listener without fear of random callers writing
+// spam into the inbox. Operators who need to post news should reach /news
+// directly on the operator listener via SSH tunnel.
 
 type JsonRpcId = number | string | null;
 
@@ -51,33 +55,14 @@ function toolsList(env: Env) {
           required: ['message'],
         },
       },
-      {
-        name: 'news',
-        description:
-          `Append an item to ${env.agentName}'s news feed. Fire-and-forget; no reply body beyond an id.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            type: { type: 'string', description: "Optional. Defaults to 'notify'." },
-            from: { type: 'string', description: 'Sender identifier. Required.' },
-            message: { type: 'string', description: 'News message. Required.' },
-            data: { type: 'object', description: 'Optional free-form payload.' },
-          },
-          required: ['from', 'message'],
-        },
-      },
     ],
   };
 }
 
-async function relay(env: Env, incomingAuth: string | null, path: '/talk' | '/news', body: unknown) {
-  // Loopback to whichever listener actually owns the path. /talk lives on the
-  // public listener (env.port), /news lives on the operator listener
-  // (env.operatorPort). Both loopback-only; no egress.
-  const port = path === '/news' ? env.operatorPort : env.port;
-  const url = `http://127.0.0.1:${port}${path}`;
+async function relay(env: Env, body: unknown) {
+  // Loopback to the public listener's /talk. No egress.
+  const url = `http://127.0.0.1:${env.port}/talk`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (incomingAuth) headers.Authorization = incomingAuth;
   const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
   const text = await resp.text();
   let parsed: unknown;
@@ -104,10 +89,12 @@ function toolResult(content: unknown, isError = false) {
 export function mcpRoutes(env: Env): Hono {
   const app = new Hono();
 
-  // When PUBLIC_AGENT_AUTH_KEY is set, the MCP endpoint demands the same
-  // bearer token. MCP clients pass it as Authorization: Bearer <key>, which
-  // we then forward to the internal /talk and /news calls so they also pass.
-  app.post('/mcp', requireAuth(env), async (c) => {
+  // MCP is public. The only tool exposed is `talk`, which matches the
+  // public surface of /talk — same rate limit and budget apply. The `news`
+  // tool is intentionally not exposed here so random callers cannot write
+  // to the inbox. Operators who need to push news should use the operator
+  // listener's /news endpoint directly (SSH-tunneled, Bearer-gated).
+  app.post('/mcp', async (c) => {
     let req: JsonRpcRequest;
     try {
       req = (await c.req.json()) as JsonRpcRequest;
@@ -117,8 +104,6 @@ export function mcpRoutes(env: Env): Hono {
     if (req.jsonrpc !== '2.0' || typeof req.method !== 'string') {
       return c.json(rpcError(req.id, -32600, 'Invalid Request'), 400);
     }
-
-    const incomingAuth = c.req.header('authorization') ?? null;
 
     switch (req.method) {
       case 'initialize':
@@ -146,19 +131,7 @@ export function mcpRoutes(env: Env): Hono {
           if (!message.trim()) {
             return c.json(rpcResult(req.id, toolResult({ error: 'missing_message' }, true)));
           }
-          const relayed = await relay(env, incomingAuth, '/talk', { message, from, session_id });
-          return c.json(rpcResult(req.id, toolResult(relayed.body, !relayed.ok)));
-        }
-
-        if (name === 'news') {
-          const from = typeof args.from === 'string' ? args.from : '';
-          const message = typeof args.message === 'string' ? args.message : '';
-          const type = typeof args.type === 'string' ? args.type : undefined;
-          const data = args.data;
-          if (!from || !message) {
-            return c.json(rpcResult(req.id, toolResult({ error: 'missing_from_or_message' }, true)));
-          }
-          const relayed = await relay(env, incomingAuth, '/news', { from, message, type, data });
+          const relayed = await relay(env, { message, from, session_id });
           return c.json(rpcResult(req.id, toolResult(relayed.body, !relayed.ok)));
         }
 
