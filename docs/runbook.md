@@ -17,8 +17,8 @@ ssh root@<vps-ip>
 systemctl stop public-agent
 ```
 
-The on-chain registration record stays intact. The agent can be re-registered later
-with `/public register-onchain <name>`.
+The registration record stays intact. The agent can be re-registered later
+with your manager's registration command.
 
 ---
 
@@ -68,14 +68,14 @@ ssh root@<vps-ip> systemctl restart public-agent
 
 ---
 
-## Re-register On-chain Metadata
+## Re-register Metadata
 
 Use the `--force` flag to re-sign and re-deliver `identity.json` even if the
-agent is already registered on-chain.
+agent is already registered.
 
 ```bash
 # From the manager CLI
-/public register-onchain <agent_name> --force
+/public register <agent_name> --force
 ```
 
 This re-signs the identity payload with the OWS wallet and re-scps it to the

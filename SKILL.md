@@ -254,4 +254,4 @@ Rebuilding the image does not wipe any of this as long as the volume mount is in
 - Multi-agent on the public side. One container = one agent.
 - SQLite / any database.
 - Deploy to a real VPS. Local Docker (Colima or Docker Desktop) only.
-- Integration with the id-agents manager DB. This agent is standalone; it is discovered only via its URL + `SKILL.md` + the REST-AP catalog.
+- Integration with any manager database. This agent is standalone; it is discovered only via its URL + `SKILL.md` + the REST-AP catalog.

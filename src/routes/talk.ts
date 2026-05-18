@@ -50,16 +50,7 @@ function buildTalkSchema(env: Env) {
         .regex(UUID_RE, 'session_id must be a UUID v4')
         .optional(),
       context: z
-        .object({
-          chainId: z.number().int().nonnegative().optional(),
-          tokenContract: z.string().max(120).optional(),
-          tokenId: z.string().max(120).optional(),
-          projectId: z.string().max(120).optional(),
-          projectSlug: z.string().max(120).optional(),
-          nft: z.unknown().optional(),
-          adapter8004: z.unknown().optional(),
-        })
-        .passthrough()
+        .record(z.string().min(1).max(120), z.unknown())
         .optional(),
     })
     .strict();

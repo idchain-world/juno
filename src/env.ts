@@ -46,17 +46,11 @@ export interface Env {
   knowledgeApiAuthToken: string | null;
   knowledgeApiTimeoutMs: number;
   knowledgeRemoteFallbackLocal: boolean;
-  dappaMcpEndpointUrl: string | null;
-  dappaMcpAllowedOrigin: string | null;
-  dappaJunoMcpServiceToken: string | null;
-  dappaChainId: string | null;
-  dappaTokenContract: string | null;
-  dappaTokenId: string | null;
-  dappaRequestId: string | null;
-  dappaJunoWorkerId: string | null;
+  mcpEndpointUrl: string | null;
+  mcpAllowedOrigin: string | null;
+  mcpServiceToken: string | null;
   mcpTimeoutMs: number;
-  dappaProjectId: string | null;
-  dappaProjectSlug: string | null;
+  requestContext: Record<string, unknown>;
   upstreamDeadlineMs: number;
   maxRetryAfterMs: number;
   requestDeadlineMs: number;
@@ -82,6 +76,31 @@ function intOr(name: string, value: string | undefined, fallback: number): numbe
     throw new Error(`Env var ${name} must be a non-negative integer, got "${value}"`);
   }
   return n;
+}
+
+function envKeyToContextKey(key: string): string {
+  return key
+    .toLowerCase()
+    .replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+}
+
+function parseRequestContext(): Record<string, unknown> {
+  const context: Record<string, unknown> = {};
+  const rawJson = process.env.JUNO_CONTEXT_JSON?.trim();
+  if (rawJson) {
+    const parsed = JSON.parse(rawJson) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Env var JUNO_CONTEXT_JSON must be a JSON object');
+    }
+    Object.assign(context, parsed as Record<string, unknown>);
+  }
+
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!key.startsWith('JUNO_CONTEXT_') || key === 'JUNO_CONTEXT_JSON') continue;
+    if (value === undefined || value.trim() === '') continue;
+    context[envKeyToContextKey(key.slice('JUNO_CONTEXT_'.length))] = value.trim();
+  }
+  return context;
 }
 
 function readPackageVersion(): string {
@@ -165,22 +184,16 @@ export function loadEnv(): Env {
       null,
     knowledgeApiTimeoutMs: intOr('JUNO_KNOWLEDGE_API_TIMEOUT_MS', process.env.JUNO_KNOWLEDGE_API_TIMEOUT_MS, 2000),
     knowledgeRemoteFallbackLocal: process.env.JUNO_KNOWLEDGE_REMOTE_FALLBACK_LOCAL === 'true',
-    dappaMcpEndpointUrl: process.env.JUNO_DAPPA_MCP_ENDPOINT_URL?.trim() || null,
-    dappaMcpAllowedOrigin: process.env.JUNO_DAPPA_MCP_ALLOWED_ORIGIN?.trim() || null,
-    dappaJunoMcpServiceToken:
-      process.env.DAPPA_JUNO_MCP_SERVICE_TOKEN?.trim() ||
-      (process.env.DAPPA_JUNO_MCP_SERVICE_TOKEN_REF?.trim()
-        ? process.env[process.env.DAPPA_JUNO_MCP_SERVICE_TOKEN_REF.trim().replace(/^env:/, '')]?.trim()
+    mcpEndpointUrl: process.env.JUNO_MCP_ENDPOINT_URL?.trim() || null,
+    mcpAllowedOrigin: process.env.JUNO_MCP_ALLOWED_ORIGIN?.trim() || null,
+    mcpServiceToken:
+      process.env.JUNO_MCP_SERVICE_TOKEN?.trim() ||
+      (process.env.JUNO_MCP_SERVICE_TOKEN_REF?.trim()
+        ? process.env[process.env.JUNO_MCP_SERVICE_TOKEN_REF.trim().replace(/^env:/, '')]?.trim()
         : '') ||
       null,
-    dappaChainId: process.env.DAPPA_CHAIN_ID?.trim() || null,
-    dappaTokenContract: process.env.DAPPA_TOKEN_CONTRACT?.trim() || null,
-    dappaTokenId: process.env.DAPPA_TOKEN_ID?.trim() || null,
-    dappaRequestId: process.env.DAPPA_REQUEST_ID?.trim() || null,
-    dappaJunoWorkerId: process.env.DAPPA_JUNO_WORKER_ID?.trim() || null,
     mcpTimeoutMs: intOr('JUNO_MCP_TIMEOUT_MS', process.env.JUNO_MCP_TIMEOUT_MS, 3000),
-    dappaProjectId: process.env.DAPPA_PROJECT_ID?.trim() || null,
-    dappaProjectSlug: process.env.DAPPA_PROJECT_SLUG?.trim() || null,
+    requestContext: parseRequestContext(),
     upstreamDeadlineMs: intOr('UPSTREAM_DEADLINE_MS', process.env.UPSTREAM_DEADLINE_MS, 45000),
     maxRetryAfterMs: intOr('MAX_RETRY_AFTER_MS', process.env.MAX_RETRY_AFTER_MS, 10000),
     requestDeadlineMs: intOr('REQUEST_DEADLINE_MS', process.env.REQUEST_DEADLINE_MS, 60000),

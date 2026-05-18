@@ -1,8 +1,8 @@
 # Juno
 
-**Juno is a public-facing agent runtime built for the [id-agents](https://github.com/idchain-world/id-agents) framework.** It is the runtime you use when an agent has to talk to callers outside your trusted mesh — a customer's website, a public `/talk` endpoint, a DMZ.
+**Juno is a public-facing agent runtime.** It is the runtime you use when an agent has to talk to callers outside your trusted environment — a customer's website, a public `/talk` endpoint, or a DMZ.
 
-Internal id-agents workers run Claude Code, Codex, or the Claude Agent SDK directly, with full shell and filesystem access. That is fine inside a local team and a liability on the open internet. Juno is the locked-down alternative: a Hono-based Node process with a narrow tool surface, a guard classifier on every turn, a daily token budget, per-IP rate limiting, and optional SSH-tunneled operator endpoints. It is the only id-agents runtime safe to point at the public internet.
+Internal workers can run coding or automation tools directly, with full shell and filesystem access. That is fine inside a trusted environment and a liability on the open internet. Juno is the locked-down alternative: a Hono-based Node process with a narrow tool surface, a guard classifier on every turn, a daily token budget, per-IP rate limiting, and optional SSH-tunneled operator endpoints.
 
 ## What Juno gives you
 
@@ -12,7 +12,7 @@ Internal id-agents workers run Claude Code, Codex, or the Claude Agent SDK direc
 - **Fail-closed operator plane** — `/inbox`, `/news`, `/mcp` require `PUBLIC_AGENT_AUTH_KEY`. Recommended binding: `127.0.0.1` with operator access via SSH tunnel; public `/talk`, `/health`, `/.well-known/*`, `/identity` on the outer interface.
 - **Bounded retrieval loop** — server-side persistence forces deterministic KB query diversity before the model is allowed to say "I don't know."
 - **DMZ-deployable** — systemd unit + Caddy reverse proxy on a Hetzner CX22 in Falkenstein, no Docker required. See [`docs/deployment.md`](docs/deployment.md).
-- **REST-AP discoverable** — publishes `/.well-known/restap.json` in the schema the id-agents manager expects; registers with `/public add <domain>` on an id-agents CLI.
+- **REST-AP discoverable** — publishes `/.well-known/restap.json` for compatible managers and clients.
 
 ## Requirements
 
@@ -44,7 +44,7 @@ set -a && source .env && set +a
 node dist/server.js
 ```
 
-Then from an id-agents CLI:
+Then register the public URL with your manager or client:
 
 ```
 /public add http://localhost:4200

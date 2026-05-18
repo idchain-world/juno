@@ -86,7 +86,7 @@ async function call(
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${env.openRouterApiKey}`,
-          'HTTP-Referer': 'https://github.com/idchain-world/id-agents',
+          'HTTP-Referer': 'https://github.com/idchain-world/juno',
           'X-Title': env.agentName,
         },
         body: JSON.stringify(body),

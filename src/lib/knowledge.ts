@@ -186,13 +186,6 @@ export interface ReadResult {
 }
 
 export interface KnowledgeRequestContext {
-  chainId?: number;
-  tokenContract?: string;
-  tokenId?: string;
-  projectId?: string;
-  projectSlug?: string;
-  nft?: unknown;
-  adapter8004?: unknown;
   [key: string]: unknown;
 }
 
@@ -455,7 +448,7 @@ export function createRequestKnowledgeProvider(input: {
 }): KnowledgeProvider {
   const local = createLocalKnowledgeProvider(input.localManifest);
   if (input.env.knowledgeProvider === 'mcp') {
-    return createDappaMcpKnowledgeProvider(input);
+    return createMcpKnowledgeProvider(input);
   }
   if (input.env.knowledgeProvider !== 'remote-http') return local;
   if (!input.env.knowledgeApiUrl) {
@@ -465,7 +458,6 @@ export function createRequestKnowledgeProvider(input: {
   return createRemoteHttpKnowledgeProvider({ ...input, fallback: input.env.knowledgeRemoteFallbackLocal ? local : null });
 }
 
-const DAPPA_MCP_PATH = '/api/internal/juno/mcp';
 const MCP_MAX_TOOL_CONTENT_BYTES = 128 * 1024;
 
 type JsonRpcResponse = {
@@ -475,30 +467,31 @@ type JsonRpcResponse = {
   error?: { code?: number; message?: string; data?: unknown } | string;
 };
 
-function createDappaMcpKnowledgeProvider(input: {
+function createMcpKnowledgeProvider(input: {
   env: Env;
   context: KnowledgeRequestContext;
 }): KnowledgeProvider {
-  const endpoint = validateDappaMcpEndpoint(input.env);
-  const headers = dappaMcpIdentityHeaders(input.env, input.context);
+  const endpoint = validateMcpEndpoint(input.env);
+  const requestContext = mergeContext(input.env.requestContext, input.context);
+  const headers = mcpContextHeaders(requestContext);
   let initialized = false;
   let cachedTools: ToolDefinition[] | null = null;
 
   async function ensureInitialized() {
     if (initialized) return;
-    await dappaMcpRpc(input.env, endpoint, headers, 'initialize', {
+    await mcpRpc(input.env, endpoint, headers, 'initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
       clientInfo: { name: 'juno', version: input.env.version },
     });
-    await dappaMcpRpc(input.env, endpoint, headers, 'notifications/initialized', undefined, { notification: true });
+    await mcpRpc(input.env, endpoint, headers, 'notifications/initialized', undefined, { notification: true });
     initialized = true;
   }
 
   async function listTools(): Promise<ToolDefinition[]> {
     await ensureInitialized();
     if (cachedTools) return cachedTools;
-    const result = await dappaMcpRpc(input.env, endpoint, headers, 'tools/list');
+    const result = await mcpRpc(input.env, endpoint, headers, 'tools/list');
     const record = result && typeof result === 'object' ? (result as Record<string, unknown>) : {};
     const tools = Array.isArray(record.tools) ? record.tools : [];
     cachedTools = tools.flatMap(toOpenRouterToolDefinition);
@@ -525,7 +518,7 @@ function createDappaMcpKnowledgeProvider(input: {
       if (!tools.some((tool) => tool.function.name === name)) {
         throw new Error('MCP tool is not available');
       }
-      const result = await dappaMcpRpc(input.env, endpoint, headers, 'tools/call', { name, arguments: args });
+      const result = await mcpRpc(input.env, endpoint, headers, 'tools/call', { name, arguments: args, context: requestContext });
       const content = mcpToolResultToText(result).slice(0, MCP_MAX_TOOL_CONTENT_BYTES);
       return {
         content,
@@ -549,26 +542,26 @@ function createDappaMcpKnowledgeProvider(input: {
   };
 }
 
-function validateDappaMcpEndpoint(env: Env): string {
-  if (!env.dappaMcpEndpointUrl) {
-    throw new Error('JUNO_DAPPA_MCP_ENDPOINT_URL is required when JUNO_KNOWLEDGE_PROVIDER=mcp');
+function validateMcpEndpoint(env: Env): string {
+  if (!env.mcpEndpointUrl) {
+    throw new Error('JUNO_MCP_ENDPOINT_URL is required when JUNO_KNOWLEDGE_PROVIDER=mcp');
   }
-  if (!env.dappaMcpAllowedOrigin) {
-    throw new Error('JUNO_DAPPA_MCP_ALLOWED_ORIGIN is required when JUNO_KNOWLEDGE_PROVIDER=mcp');
+  if (!env.mcpAllowedOrigin) {
+    throw new Error('JUNO_MCP_ALLOWED_ORIGIN is required when JUNO_KNOWLEDGE_PROVIDER=mcp');
   }
-  if (!env.dappaJunoMcpServiceToken) {
-    throw new Error('DAPPA_JUNO_MCP_SERVICE_TOKEN is required when JUNO_KNOWLEDGE_PROVIDER=mcp');
+  if (!env.mcpServiceToken) {
+    throw new Error('JUNO_MCP_SERVICE_TOKEN is required when JUNO_KNOWLEDGE_PROVIDER=mcp');
   }
 
   let endpoint: URL;
   let allowed: URL;
   try {
-    endpoint = new URL(env.dappaMcpEndpointUrl);
-    allowed = new URL(env.dappaMcpAllowedOrigin);
+    endpoint = new URL(env.mcpEndpointUrl);
+    allowed = new URL(env.mcpAllowedOrigin);
   } catch {
     throw new Error('Juno MCP endpoint and allowed origin must be valid URLs');
   }
-  if (endpoint.origin !== allowed.origin || endpoint.pathname !== DAPPA_MCP_PATH) {
+  if (endpoint.origin !== allowed.origin) {
     throw new Error('Juno MCP endpoint is not whitelisted');
   }
   if (!['https:', 'http:'].includes(endpoint.protocol)) {
@@ -577,30 +570,12 @@ function validateDappaMcpEndpoint(env: Env): string {
   return endpoint.toString();
 }
 
-function dappaMcpIdentityHeaders(env: Env, context: KnowledgeRequestContext): Record<string, string> {
-  const projectSlug = stringValue(context.projectSlug) ?? env.dappaProjectSlug;
-  const chainId = stringValue(context.chainId) ?? env.dappaChainId;
-  const tokenContract = stringValue(context.tokenContract) ?? env.dappaTokenContract;
-  const tokenId = stringValue(context.tokenId) ?? env.dappaTokenId;
-  const required = { projectSlug, chainId, tokenContract, tokenId };
-  const missing = Object.entries(required).filter(([, value]) => !value).map(([key]) => key);
-  if (missing.length > 0) {
-    throw new Error(`Juno MCP identity missing: ${missing.join(', ')}`);
-  }
-  return {
-    'x-dappa-project-slug': projectSlug!,
-    'x-dappa-chain-id': chainId!,
-    'x-dappa-token-contract': tokenContract!,
-    'x-dappa-token-id': tokenId!,
-    ...(env.dappaRequestId ? { 'x-dappa-request-id': env.dappaRequestId } : {}),
-    ...(env.dappaJunoWorkerId ? { 'x-dappa-juno-worker-id': env.dappaJunoWorkerId } : {}),
-  };
+function mergeContext(...contexts: Array<Record<string, unknown> | null | undefined>): Record<string, unknown> {
+  return Object.assign({}, ...contexts.filter(Boolean));
 }
 
-function stringValue(value: unknown): string | null {
-  if (typeof value === 'string' && value.trim()) return value.trim();
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-  return null;
+function mcpContextHeaders(context: Record<string, unknown>): Record<string, string> {
+  return Object.keys(context).length > 0 ? { 'x-juno-context': JSON.stringify(context) } : {};
 }
 
 function toOpenRouterToolDefinition(tool: unknown): ToolDefinition[] {
@@ -621,7 +596,7 @@ function toOpenRouterToolDefinition(tool: unknown): ToolDefinition[] {
   }];
 }
 
-async function dappaMcpRpc(
+async function mcpRpc(
   env: Env,
   endpoint: string,
   identityHeaders: Record<string, string>,
@@ -656,7 +631,7 @@ async function mcpFetchWithRetry(
         headers: {
           'content-type': 'application/json',
           accept: 'application/json',
-          authorization: `Bearer ${env.dappaJunoMcpServiceToken}`,
+          authorization: `Bearer ${env.mcpServiceToken}`,
           ...identityHeaders,
         },
         body: JSON.stringify(body),
@@ -728,11 +703,7 @@ function createRemoteHttpKnowledgeProvider(input: {
           conversation: input.conversation
             .filter((m) => m.role === 'user' || m.role === 'assistant')
             .map((m) => ({ role: m.role, content: m.content })),
-          context: {
-            ...(input.env.dappaProjectId ? { projectId: input.env.dappaProjectId } : {}),
-            ...(input.env.dappaProjectSlug ? { projectSlug: input.env.dappaProjectSlug } : {}),
-            ...input.context,
-          },
+          context: mergeContext(input.env.requestContext, input.context),
           topK: KNOWLEDGE_SEARCH_MAX_RESULTS,
         });
         const data = await response.json().catch(() => null);
@@ -762,9 +733,7 @@ function createRemoteHttpKnowledgeProvider(input: {
 function knowledgeQueryEndpoint(env: Env): string {
   const raw = env.knowledgeApiUrl?.replace(/\/+$/, '') ?? '';
   if (/\/knowledge\/query$/.test(raw)) return raw;
-  const slug = env.dappaProjectSlug ?? env.dappaProjectId;
-  if (!slug) throw new Error('DAPPA_PROJECT_SLUG or DAPPA_PROJECT_ID is required for remote knowledge');
-  return `${raw}/api/projects/${encodeURIComponent(slug)}/knowledge/query`;
+  throw new Error('JUNO_KNOWLEDGE_API_URL must point to a /knowledge/query endpoint for remote knowledge');
 }
 
 async function remoteFetch(env: Env, url: string, body: unknown): Promise<Response> {
@@ -774,7 +743,7 @@ async function remoteFetch(env: Env, url: string, body: unknown): Promise<Respon
   if (env.knowledgeApiAuthMode === 'bearer' && env.knowledgeApiAuthToken) {
     headers.authorization = `Bearer ${env.knowledgeApiAuthToken}`;
   } else if (env.knowledgeApiAuthMode === 'service' && env.knowledgeApiAuthToken) {
-    headers['x-dappa-knowledge-token'] = env.knowledgeApiAuthToken;
+    headers['x-juno-knowledge-token'] = env.knowledgeApiAuthToken;
   }
   try {
     return await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal });

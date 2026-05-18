@@ -49,7 +49,7 @@ type ConnInfoFn = (c: Context) => { remote: { address?: string | undefined } };
 /**
  * Best-effort client IP.
  *   - If trustedProxy=true, the first hop in X-Forwarded-For is honored.
- *     Chain this only behind a reverse proxy you control.
+ *     Use this only behind a reverse proxy you control.
  *   - Otherwise, the socket's remoteAddress (via @hono/node-server) is used.
  * Returns null if no source provides an IP — callers should 400 rather than
  * fall back to an "unknown" bucket, which would collide every anonymous

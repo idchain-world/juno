@@ -2,7 +2,7 @@
   "name": "@idchain/juno",
   "version": "0.1.2",
   "private": false,
-  "description": "Juno — the public-facing, capability-limited agent runtime for the id-agents framework. Hono + OpenRouter, guarded and rate-limited, safe to point at the internet.",
+  "description": "Juno — a public-facing, capability-limited agent runtime. Hono + OpenRouter, guarded and rate-limited, safe to point at the internet.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/idchain-world/juno.git"
@@ -12,7 +12,6 @@
     "url": "https://github.com/idchain-world/juno/issues"
   },
   "keywords": [
-    "id-agents",
     "juno",
     "agent",
     "rest-ap",

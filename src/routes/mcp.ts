@@ -60,7 +60,7 @@ function toolsList(env: Env) {
             context: {
               type: 'object',
               description:
-                'Optional token/project context forwarded to remote knowledge providers. Supports chainId, tokenContract, tokenId, projectId, projectSlug, nft, and adapter8004.',
+                'Optional caller-supplied context forwarded opaquely to remote knowledge providers.',
             },
           },
           required: ['message'],

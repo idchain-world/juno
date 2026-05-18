@@ -14,24 +14,25 @@ function localManifest() {
 function mcpEnv(overrides = {}) {
   return makeEnv({
     knowledgeProvider: 'mcp',
-    dappaMcpEndpointUrl: 'https://dappa.example/api/internal/juno/mcp',
-    dappaMcpAllowedOrigin: 'https://dappa.example',
-    dappaJunoMcpServiceToken: 'service-token',
-    dappaProjectSlug: 'normies',
-    dappaChainId: '1',
-    dappaTokenContract: '0xabc',
-    dappaTokenId: '9152',
-    dappaJunoWorkerId: 'worker-a',
+    mcpEndpointUrl: 'https://knowledge.example/api/internal/juno/mcp',
+    mcpAllowedOrigin: 'https://knowledge.example',
+    mcpServiceToken: 'service-token',
+    requestContext: {
+      tenantSlug: 'example-tenant',
+      resourceGroup: 'alpha',
+      resourceId: '9152',
+      workerId: 'worker-a',
+    },
     ...overrides,
   });
 }
 
-describe('Dappa MCP knowledge provider', () => {
+describe('MCP knowledge provider', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('lists dynamic MCP tools and injects service and token identity headers on tool call', async () => {
+  it('lists dynamic MCP tools and forwards service auth plus opaque context on tool call', async () => {
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
       const body = JSON.parse(init.body as string);
       if (body.method === 'initialize') {
@@ -88,7 +89,7 @@ describe('Dappa MCP knowledge provider', () => {
     const provider = createRequestKnowledgeProvider({
       env: mcpEnv(),
       localManifest: localManifest(),
-      context: { chainId: 8453, tokenContract: '0xdef', tokenId: '7', projectSlug: 'override-slug' },
+      context: { resourceGroup: 'beta', resourceId: '7', tenantSlug: 'override-tenant' },
       conversation: [],
     });
 
@@ -103,25 +104,32 @@ describe('Dappa MCP knowledge provider', () => {
     const call = fetchMock.mock.calls.find(([, init]) => JSON.parse(init.body as string).method === 'tools/call');
     expect(call).toBeTruthy();
     const [url, init] = call as [string, RequestInit];
-    expect(url).toBe('https://dappa.example/api/internal/juno/mcp');
+    expect(url).toBe('https://knowledge.example/api/internal/juno/mcp');
     expect(init.headers).toMatchObject({
       authorization: 'Bearer service-token',
-      'x-dappa-project-slug': 'override-slug',
-      'x-dappa-chain-id': '8453',
-      'x-dappa-token-contract': '0xdef',
-      'x-dappa-token-id': '7',
-      'x-dappa-juno-worker-id': 'worker-a',
+      'x-juno-context': JSON.stringify({
+        tenantSlug: 'override-tenant',
+        resourceGroup: 'beta',
+        resourceId: '7',
+        workerId: 'worker-a',
+      }),
     });
     expect(JSON.parse(init.body as string).params).toEqual({
       name: 'custom_project_tool',
       arguments: { depth: 2 },
+      context: {
+        tenantSlug: 'override-tenant',
+        resourceGroup: 'beta',
+        resourceId: '7',
+        workerId: 'worker-a',
+      },
     });
   });
 
   it('rejects a non-whitelisted MCP endpoint URL', () => {
     expect(() =>
       createRequestKnowledgeProvider({
-        env: mcpEnv({ dappaMcpEndpointUrl: 'https://evil.example/api/internal/juno/mcp' }),
+        env: mcpEnv({ mcpEndpointUrl: 'https://evil.example/api/internal/juno/mcp' }),
         localManifest: localManifest(),
         context: {},
         conversation: [],

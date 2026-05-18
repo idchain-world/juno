@@ -20,7 +20,7 @@ describe('remote HTTP knowledge provider', () => {
     vi.restoreAllMocks();
   });
 
-  it('posts Dappa query shape with token context and bearer auth', async () => {
+  it('posts generic query shape with opaque context and bearer auth', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(
         JSON.stringify({
@@ -35,15 +35,15 @@ describe('remote HTTP knowledge provider', () => {
 
     const env = makeEnv({
       knowledgeProvider: 'remote-http',
-      knowledgeApiUrl: 'https://dappa.example',
+      knowledgeApiUrl: 'https://knowledge.example/api/projects/normies/knowledge/query',
       knowledgeApiAuthMode: 'bearer',
       knowledgeApiAuthToken: 'secret-token',
-      dappaProjectSlug: 'normies',
+      requestContext: { tenantSlug: 'normies' },
     });
     const provider = createRequestKnowledgeProvider({
       env,
       localManifest: localManifest(),
-      context: { chainId: 1, tokenContract: '0xabc', tokenId: '9152' },
+      context: { resourceGroup: 'one', resourceId: '9152' },
       conversation: [{ role: 'user', content: 'What is this Normie?' }],
     });
 
@@ -57,12 +57,12 @@ describe('remote HTTP knowledge provider', () => {
     expect(result.log.ok).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://dappa.example/api/projects/normies/knowledge/query');
+    expect(url).toBe('https://knowledge.example/api/projects/normies/knowledge/query');
     expect((init.headers as Record<string, string>).authorization).toBe('Bearer secret-token');
     const body = JSON.parse(init.body as string);
     expect(body).toMatchObject({
       query: 'Normie',
-      context: { chainId: 1, tokenContract: '0xabc', tokenId: '9152', projectSlug: 'normies' },
+      context: { resourceGroup: 'one', resourceId: '9152', tenantSlug: 'normies' },
       topK: 5,
     });
   });
@@ -80,7 +80,7 @@ describe('remote HTTP knowledge provider', () => {
     const provider = createRequestKnowledgeProvider({
       env: makeEnv({
         knowledgeProvider: 'remote-http',
-        knowledgeApiUrl: 'https://dappa.example/api/projects/normies/knowledge/query',
+        knowledgeApiUrl: 'https://knowledge.example/api/projects/normies/knowledge/query',
         knowledgeApiAuthMode: 'service',
         knowledgeApiAuthToken: 'svc',
       }),
@@ -93,7 +93,7 @@ describe('remote HTTP knowledge provider', () => {
     const read = await provider.read('doc-one.md');
     expect(read?.content).toBe('Full remote body');
     const init = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
-    expect((init.headers as Record<string, string>)['x-dappa-knowledge-token']).toBe('svc');
+    expect((init.headers as Record<string, string>)['x-juno-knowledge-token']).toBe('svc');
   });
 
   it('times out remote retrieval', async () => {
@@ -109,9 +109,8 @@ describe('remote HTTP knowledge provider', () => {
     const provider = createRequestKnowledgeProvider({
       env: makeEnv({
         knowledgeProvider: 'remote-http',
-        knowledgeApiUrl: 'https://dappa.example',
+        knowledgeApiUrl: 'https://knowledge.example/api/projects/normies/knowledge/query',
         knowledgeApiTimeoutMs: 5,
-        dappaProjectSlug: 'normies',
       }),
       localManifest: localManifest(),
       context: {},
@@ -126,9 +125,8 @@ describe('remote HTTP knowledge provider', () => {
     const provider = createRequestKnowledgeProvider({
       env: makeEnv({
         knowledgeProvider: 'remote-http',
-        knowledgeApiUrl: 'https://dappa.example',
+        knowledgeApiUrl: 'https://knowledge.example/api/projects/normies/knowledge/query',
         knowledgeRemoteFallbackLocal: true,
-        dappaProjectSlug: 'normies',
       }),
       localManifest: localManifest(),
       context: {},

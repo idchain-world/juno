@@ -1,7 +1,5 @@
 /**
- * GET /identity serves the on-chain identity fields delivered by the manager
- * over SCP. Contract:
- *   { name, ows_address, idchain_domain, token_id, service_endpoint, registered_at }
+ * GET /identity serves the operator-delivered identity document.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -23,12 +21,10 @@ describe('GET /identity', () => {
     try { fs.unlinkSync(tmpPath); } catch { /* noop */ }
   });
 
-  it('returns the on-chain identity when the file exists', async () => {
+  it('returns the identity document when the file exists', async () => {
     const identity = {
-      name: 'example.idchain',
-      ows_address: '0xABCDEF',
-      idchain_domain: 'example.idchain',
-      token_id: '42',
+      name: 'example-agent',
+      subject: 'example',
       service_endpoint: 'https://example.com',
       registered_at: '2026-04-18T00:00:00Z',
     };

@@ -59,7 +59,7 @@ unit file and rebuild code.
 
 ```bash
 sudo /opt/juno/scripts/juno-add.sh <name> <domain>
-# e.g. sudo /opt/juno/scripts/juno-add.sh docs docs.idagents.ai
+# e.g. sudo /opt/juno/scripts/juno-add.sh docs docs.example.com
 ```
 
 What `juno-add.sh` does, under a `flock`:
@@ -226,7 +226,7 @@ sudo systemctl stop 'juno@*'
 
 Takes effect within seconds. In-flight requests are dropped.
 
-Deregister from the id-agents manager from your local CLI:
+Deregister from your manager or client:
 
 ```
 /public remove <domain>
