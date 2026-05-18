@@ -40,12 +40,21 @@ export interface Env {
   maxGuardTokens: number;
   maxMessageChars: number;
   knowledgeDir: string;
-  knowledgeProvider: 'local' | 'remote-http';
+  knowledgeProvider: 'local' | 'remote-http' | 'mcp';
   knowledgeApiUrl: string | null;
   knowledgeApiAuthMode: 'none' | 'bearer' | 'service';
   knowledgeApiAuthToken: string | null;
   knowledgeApiTimeoutMs: number;
   knowledgeRemoteFallbackLocal: boolean;
+  dappaMcpEndpointUrl: string | null;
+  dappaMcpAllowedOrigin: string | null;
+  dappaJunoMcpServiceToken: string | null;
+  dappaChainId: string | null;
+  dappaTokenContract: string | null;
+  dappaTokenId: string | null;
+  dappaRequestId: string | null;
+  dappaJunoWorkerId: string | null;
+  mcpTimeoutMs: number;
   dappaProjectId: string | null;
   dappaProjectSlug: string | null;
   upstreamDeadlineMs: number;
@@ -136,7 +145,11 @@ export function loadEnv(): Env {
     maxMessageChars: intOr('MAX_MESSAGE_CHARS', process.env.MAX_MESSAGE_CHARS, 8000),
     knowledgeDir: process.env.PUBLIC_AGENT_KNOWLEDGE_DIR?.trim() || '/app/knowledge',
     knowledgeProvider:
-      process.env.JUNO_KNOWLEDGE_PROVIDER?.trim() === 'remote-http' ? 'remote-http' : 'local',
+      process.env.JUNO_KNOWLEDGE_PROVIDER?.trim() === 'remote-http'
+        ? 'remote-http'
+        : process.env.JUNO_KNOWLEDGE_PROVIDER?.trim() === 'mcp'
+          ? 'mcp'
+          : 'local',
     knowledgeApiUrl: process.env.JUNO_KNOWLEDGE_API_URL?.trim() || null,
     knowledgeApiAuthMode:
       process.env.JUNO_KNOWLEDGE_API_AUTH_MODE?.trim() === 'bearer'
@@ -152,6 +165,20 @@ export function loadEnv(): Env {
       null,
     knowledgeApiTimeoutMs: intOr('JUNO_KNOWLEDGE_API_TIMEOUT_MS', process.env.JUNO_KNOWLEDGE_API_TIMEOUT_MS, 2000),
     knowledgeRemoteFallbackLocal: process.env.JUNO_KNOWLEDGE_REMOTE_FALLBACK_LOCAL === 'true',
+    dappaMcpEndpointUrl: process.env.JUNO_DAPPA_MCP_ENDPOINT_URL?.trim() || null,
+    dappaMcpAllowedOrigin: process.env.JUNO_DAPPA_MCP_ALLOWED_ORIGIN?.trim() || null,
+    dappaJunoMcpServiceToken:
+      process.env.DAPPA_JUNO_MCP_SERVICE_TOKEN?.trim() ||
+      (process.env.DAPPA_JUNO_MCP_SERVICE_TOKEN_REF?.trim()
+        ? process.env[process.env.DAPPA_JUNO_MCP_SERVICE_TOKEN_REF.trim().replace(/^env:/, '')]?.trim()
+        : '') ||
+      null,
+    dappaChainId: process.env.DAPPA_CHAIN_ID?.trim() || null,
+    dappaTokenContract: process.env.DAPPA_TOKEN_CONTRACT?.trim() || null,
+    dappaTokenId: process.env.DAPPA_TOKEN_ID?.trim() || null,
+    dappaRequestId: process.env.DAPPA_REQUEST_ID?.trim() || null,
+    dappaJunoWorkerId: process.env.DAPPA_JUNO_WORKER_ID?.trim() || null,
+    mcpTimeoutMs: intOr('JUNO_MCP_TIMEOUT_MS', process.env.JUNO_MCP_TIMEOUT_MS, 3000),
     dappaProjectId: process.env.DAPPA_PROJECT_ID?.trim() || null,
     dappaProjectSlug: process.env.DAPPA_PROJECT_SLUG?.trim() || null,
     upstreamDeadlineMs: intOr('UPSTREAM_DEADLINE_MS', process.env.UPSTREAM_DEADLINE_MS, 45000),

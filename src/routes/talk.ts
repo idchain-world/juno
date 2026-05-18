@@ -177,13 +177,14 @@ async function runToolLoop(
   let combinedUsage = { prompt: 0, completion: 0, total: 0 };
   let model = env.openRouterModel;
   let callBudget = KNOWLEDGE_MAX_TOOL_CALLS_PER_REQUEST;
+  const toolDefinitions = knowledge.toolDefinitions ? await knowledge.toolDefinitions() : KNOWLEDGE_TOOL_DEFS;
 
   // Loop: ask the model, execute tool calls if any, re-ask. Bail when the
   // model returns a plain content message or we exhaust the call budget.
   while (true) {
     const raw: RawAssistantMessage = await openRouterRawCall(env, messages, {
       maxTokens: replyCap > 0 ? replyCap : undefined,
-      tools: KNOWLEDGE_TOOL_DEFS,
+      tools: toolDefinitions,
       toolChoice: 'auto',
     });
     model = raw.model;
@@ -217,18 +218,21 @@ async function runToolLoop(
 
       let execResult: { content: string; log: ToolCallLog };
       try {
+        const timeoutMs = knowledge.mode === 'mcp' ? env.mcpTimeoutMs + 500 : KNOWLEDGE_TOOL_TIMEOUT_MS;
         execResult = await withTimeout(
           () =>
             Promise.resolve(
-              executeKnowledgeToolWithProvider(knowledge, tc.function.name, tc.function.arguments, { dataDir: env.dataDir }),
+              knowledge.executeTool
+                ? knowledge.executeTool(tc.function.name, tc.function.arguments, { dataDir: env.dataDir })
+                : executeKnowledgeToolWithProvider(knowledge, tc.function.name, tc.function.arguments, { dataDir: env.dataDir }),
             ),
-          KNOWLEDGE_TOOL_TIMEOUT_MS,
+          timeoutMs,
         );
       } catch (err) {
         const msg = `tool_error: ${(err as Error).message}`;
         execResult = {
           content: msg,
-          log: { name: tc.function.name, args: {}, ok: false, bytes: msg.length, result_count: 0, duration_ms: KNOWLEDGE_TOOL_TIMEOUT_MS, error: msg },
+          log: { name: tc.function.name, args: {}, ok: false, bytes: msg.length, result_count: 0, duration_ms: knowledge.mode === 'mcp' ? env.mcpTimeoutMs : KNOWLEDGE_TOOL_TIMEOUT_MS, error: msg },
         };
       }
 

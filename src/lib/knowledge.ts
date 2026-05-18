@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Env } from '../env.js';
-import type { ChatMessage } from './openrouter.js';
+import type { ChatMessage, ToolDefinition } from './openrouter.js';
 import { truncateToolContent } from './tool-truncate.js';
 
 // Strict file-id shape: lowercase letters, digits, dashes, ending in `.md`.
@@ -197,7 +197,13 @@ export interface KnowledgeRequestContext {
 }
 
 export interface KnowledgeProvider {
-  mode: 'local' | 'remote-http';
+  mode: 'local' | 'remote-http' | 'mcp';
+  toolDefinitions?: () => Promise<ToolDefinition[]>;
+  executeTool?: (
+    name: string,
+    rawArgs: string,
+    opts: { dataDir: string },
+  ) => Promise<{ content: string; log: ToolCallLog }>;
   search(query: string): Promise<SearchHit[]>;
   read(file_id: string): Promise<ReadResult | null>;
 }
@@ -448,12 +454,260 @@ export function createRequestKnowledgeProvider(input: {
   conversation: ChatMessage[];
 }): KnowledgeProvider {
   const local = createLocalKnowledgeProvider(input.localManifest);
+  if (input.env.knowledgeProvider === 'mcp') {
+    return createDappaMcpKnowledgeProvider(input);
+  }
   if (input.env.knowledgeProvider !== 'remote-http') return local;
   if (!input.env.knowledgeApiUrl) {
     if (input.env.knowledgeRemoteFallbackLocal) return local;
     throw new Error('JUNO_KNOWLEDGE_API_URL is required when JUNO_KNOWLEDGE_PROVIDER=remote-http');
   }
   return createRemoteHttpKnowledgeProvider({ ...input, fallback: input.env.knowledgeRemoteFallbackLocal ? local : null });
+}
+
+const DAPPA_MCP_PATH = '/api/internal/juno/mcp';
+const MCP_MAX_TOOL_CONTENT_BYTES = 128 * 1024;
+
+type JsonRpcResponse = {
+  jsonrpc?: string;
+  id?: unknown;
+  result?: unknown;
+  error?: { code?: number; message?: string; data?: unknown } | string;
+};
+
+function createDappaMcpKnowledgeProvider(input: {
+  env: Env;
+  context: KnowledgeRequestContext;
+}): KnowledgeProvider {
+  const endpoint = validateDappaMcpEndpoint(input.env);
+  const headers = dappaMcpIdentityHeaders(input.env, input.context);
+  let initialized = false;
+  let cachedTools: ToolDefinition[] | null = null;
+
+  async function ensureInitialized() {
+    if (initialized) return;
+    await dappaMcpRpc(input.env, endpoint, headers, 'initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'juno', version: input.env.version },
+    });
+    await dappaMcpRpc(input.env, endpoint, headers, 'notifications/initialized', undefined, { notification: true });
+    initialized = true;
+  }
+
+  async function listTools(): Promise<ToolDefinition[]> {
+    await ensureInitialized();
+    if (cachedTools) return cachedTools;
+    const result = await dappaMcpRpc(input.env, endpoint, headers, 'tools/list');
+    const record = result && typeof result === 'object' ? (result as Record<string, unknown>) : {};
+    const tools = Array.isArray(record.tools) ? record.tools : [];
+    cachedTools = tools.flatMap(toOpenRouterToolDefinition);
+    return cachedTools;
+  }
+
+  async function executeMcpTool(
+    name: string,
+    rawArgs: string,
+    _opts: { dataDir: string },
+  ): Promise<{ content: string; log: ToolCallLog }> {
+    const started = Date.now();
+    let args: Record<string, unknown>;
+    try {
+      args = rawArgs ? JSON.parse(rawArgs) : {};
+      if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('not_object');
+    } catch {
+      const err = 'tool_error: arguments must be a JSON object';
+      return { content: err, log: { name, args: {}, ok: false, bytes: err.length, result_count: 0, error: err, duration_ms: Date.now() - started } };
+    }
+
+    try {
+      const tools = await listTools();
+      if (!tools.some((tool) => tool.function.name === name)) {
+        throw new Error('MCP tool is not available');
+      }
+      const result = await dappaMcpRpc(input.env, endpoint, headers, 'tools/call', { name, arguments: args });
+      const content = mcpToolResultToText(result).slice(0, MCP_MAX_TOOL_CONTENT_BYTES);
+      return {
+        content,
+        log: { name, args, ok: true, bytes: content.length, result_count: 1, duration_ms: Date.now() - started },
+      };
+    } catch (err) {
+      const msg = `tool_error: ${sanitizeMcpError(err)}`;
+      return {
+        content: msg,
+        log: { name, args, ok: false, bytes: msg.length, result_count: 0, error: msg, duration_ms: Date.now() - started },
+      };
+    }
+  }
+
+  return {
+    mode: 'mcp',
+    toolDefinitions: listTools,
+    executeTool: executeMcpTool,
+    search: async () => [],
+    read: async () => null,
+  };
+}
+
+function validateDappaMcpEndpoint(env: Env): string {
+  if (!env.dappaMcpEndpointUrl) {
+    throw new Error('JUNO_DAPPA_MCP_ENDPOINT_URL is required when JUNO_KNOWLEDGE_PROVIDER=mcp');
+  }
+  if (!env.dappaMcpAllowedOrigin) {
+    throw new Error('JUNO_DAPPA_MCP_ALLOWED_ORIGIN is required when JUNO_KNOWLEDGE_PROVIDER=mcp');
+  }
+  if (!env.dappaJunoMcpServiceToken) {
+    throw new Error('DAPPA_JUNO_MCP_SERVICE_TOKEN is required when JUNO_KNOWLEDGE_PROVIDER=mcp');
+  }
+
+  let endpoint: URL;
+  let allowed: URL;
+  try {
+    endpoint = new URL(env.dappaMcpEndpointUrl);
+    allowed = new URL(env.dappaMcpAllowedOrigin);
+  } catch {
+    throw new Error('Juno MCP endpoint and allowed origin must be valid URLs');
+  }
+  if (endpoint.origin !== allowed.origin || endpoint.pathname !== DAPPA_MCP_PATH) {
+    throw new Error('Juno MCP endpoint is not whitelisted');
+  }
+  if (!['https:', 'http:'].includes(endpoint.protocol)) {
+    throw new Error('Juno MCP endpoint must use http or https');
+  }
+  return endpoint.toString();
+}
+
+function dappaMcpIdentityHeaders(env: Env, context: KnowledgeRequestContext): Record<string, string> {
+  const projectSlug = stringValue(context.projectSlug) ?? env.dappaProjectSlug;
+  const chainId = stringValue(context.chainId) ?? env.dappaChainId;
+  const tokenContract = stringValue(context.tokenContract) ?? env.dappaTokenContract;
+  const tokenId = stringValue(context.tokenId) ?? env.dappaTokenId;
+  const required = { projectSlug, chainId, tokenContract, tokenId };
+  const missing = Object.entries(required).filter(([, value]) => !value).map(([key]) => key);
+  if (missing.length > 0) {
+    throw new Error(`Juno MCP identity missing: ${missing.join(', ')}`);
+  }
+  return {
+    'x-dappa-project-slug': projectSlug!,
+    'x-dappa-chain-id': chainId!,
+    'x-dappa-token-contract': tokenContract!,
+    'x-dappa-token-id': tokenId!,
+    ...(env.dappaRequestId ? { 'x-dappa-request-id': env.dappaRequestId } : {}),
+    ...(env.dappaJunoWorkerId ? { 'x-dappa-juno-worker-id': env.dappaJunoWorkerId } : {}),
+  };
+}
+
+function stringValue(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function toOpenRouterToolDefinition(tool: unknown): ToolDefinition[] {
+  if (!tool || typeof tool !== 'object') return [];
+  const record = tool as Record<string, unknown>;
+  if (typeof record.name !== 'string' || !record.name.trim()) return [];
+  const inputSchema =
+    record.inputSchema && typeof record.inputSchema === 'object'
+      ? (record.inputSchema as Record<string, unknown>)
+      : { type: 'object', properties: {}, additionalProperties: false };
+  return [{
+    type: 'function',
+    function: {
+      name: record.name.trim(),
+      description: typeof record.description === 'string' ? record.description : '',
+      parameters: inputSchema,
+    },
+  }];
+}
+
+async function dappaMcpRpc(
+  env: Env,
+  endpoint: string,
+  identityHeaders: Record<string, string>,
+  method: string,
+  params?: unknown,
+  opts: { notification?: boolean } = {},
+): Promise<unknown> {
+  const body: Record<string, unknown> = { jsonrpc: '2.0', method };
+  if (!opts.notification) body.id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  if (params !== undefined) body.params = params;
+  const response = await mcpFetchWithRetry(env, endpoint, identityHeaders, body);
+  if (opts.notification) return null;
+  const data = (await response.json().catch(() => null)) as JsonRpcResponse | null;
+  if (!data || typeof data !== 'object') throw new Error('invalid MCP response');
+  if (data.error) throw new Error(extractJsonRpcError(data.error));
+  return data.result;
+}
+
+async function mcpFetchWithRetry(
+  env: Env,
+  endpoint: string,
+  identityHeaders: Record<string, string>,
+  body: unknown,
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), env.mcpTimeoutMs);
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json',
+          authorization: `Bearer ${env.dappaJunoMcpServiceToken}`,
+          ...identityHeaders,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (response.ok) return response;
+      if (response.status >= 500 && attempt === 0) {
+        lastError = new Error(`MCP upstream HTTP ${response.status}`);
+        continue;
+      }
+      throw new Error(`MCP upstream HTTP ${response.status}`);
+    } catch (err) {
+      lastError = err;
+      if ((err as Error).name === 'AbortError') {
+        throw new Error(`MCP timeout after ${env.mcpTimeoutMs}ms`);
+      }
+      if (attempt > 0) throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('MCP request failed');
+}
+
+function mcpToolResultToText(result: unknown): string {
+  if (!result || typeof result !== 'object') return JSON.stringify(result ?? null);
+  const record = result as Record<string, unknown>;
+  if (Array.isArray(record.content)) {
+    return record.content
+      .map((part) => {
+        if (!part || typeof part !== 'object') return '';
+        const item = part as Record<string, unknown>;
+        if (item.type === 'text' && typeof item.text === 'string') return item.text;
+        return JSON.stringify(item);
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return JSON.stringify(result);
+}
+
+function extractJsonRpcError(error: NonNullable<JsonRpcResponse['error']>): string {
+  if (typeof error === 'string') return error;
+  if (typeof error.message === 'string' && error.message.trim()) return error.message.trim();
+  return 'MCP tool failed';
+}
+
+function sanitizeMcpError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/token|authorization|bearer|secret/i.test(msg)) return 'MCP request failed';
+  return msg.slice(0, 200);
 }
 
 function createRemoteHttpKnowledgeProvider(input: {
