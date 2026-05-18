@@ -50,12 +50,12 @@ describe('well-known schema matches CLI/manager contract', () => {
     expect(endpoints.identity).toBe('/identity');
   });
 
-  it('capabilities array contains talk, news, search_knowledge, read_knowledge', async () => {
+  it('capabilities array contains talk, news, mcp, search_knowledge, read_knowledge', async () => {
     const env = makeEnv();
     const app = new Hono().route('/', wellknownRoutes(env));
     const res = await req(app, 'GET', '/.well-known/restap.json');
     const body = res.body as Record<string, unknown>;
-    expect(body.capabilities).toEqual(['talk', 'news', 'search_knowledge', 'read_knowledge']);
+    expect(body.capabilities).toEqual(['talk', 'news', 'mcp', 'search_knowledge', 'read_knowledge']);
   });
 
   it('auth object declares talk=none, operator=ssh-tunnel', async () => {

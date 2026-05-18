@@ -57,6 +57,11 @@ function toolsList(env: Env) {
               description:
                 'Optional. Server-minted UUID returned from a prior call. Include on follow-up turns to thread them; omit to start a fresh session.',
             },
+            context: {
+              type: 'object',
+              description:
+                'Optional token/project context forwarded to remote knowledge providers. Supports chainId, tokenContract, tokenId, projectId, projectSlug, nft, and adapter8004.',
+            },
           },
           required: ['message'],
         },
@@ -184,10 +189,13 @@ export function mcpRoutes(env: Env): Hono {
           const session_id = typeof args.session_id === 'string' && args.session_id.trim()
             ? args.session_id.trim()
             : undefined;
+          const context = args.context && typeof args.context === 'object' && !Array.isArray(args.context)
+            ? args.context
+            : undefined;
           if (!message.trim()) {
             return c.json(rpcResult(req.id, toolResult({ error: 'missing_message' }, true)));
           }
-          const relayed = await relayPost(env, '/talk', { message, from, session_id });
+          const relayed = await relayPost(env, '/talk', { message, from, session_id, ...(context ? { context } : {}) });
           return c.json(rpcResult(req.id, toolResult(relayed.body, !relayed.ok)));
         }
 

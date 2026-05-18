@@ -15,9 +15,12 @@ import {
   KNOWLEDGE_MAX_TOOL_OUTPUT_BYTES,
   KNOWLEDGE_TOOL_DEFS,
   KNOWLEDGE_TOOL_TIMEOUT_MS,
-  executeKnowledgeTool,
+  executeKnowledgeToolWithProvider,
+  createRequestKnowledgeProvider,
   wrapToolContent,
+  type KnowledgeRequestContext,
   type KnowledgeManifest,
+  type KnowledgeProvider,
   type ToolCallLog,
 } from '../lib/knowledge.js';
 import {
@@ -45,6 +48,18 @@ function buildTalkSchema(env: Env) {
       session_id: z
         .string()
         .regex(UUID_RE, 'session_id must be a UUID v4')
+        .optional(),
+      context: z
+        .object({
+          chainId: z.number().int().nonnegative().optional(),
+          tokenContract: z.string().max(120).optional(),
+          tokenId: z.string().max(120).optional(),
+          projectId: z.string().max(120).optional(),
+          projectSlug: z.string().max(120).optional(),
+          nft: z.unknown().optional(),
+          adapter8004: z.unknown().optional(),
+        })
+        .passthrough()
         .optional(),
     })
     .strict();
@@ -146,7 +161,7 @@ function writeGuardedInbox(
 // returns the final user-visible reply plus combined usage.
 async function runToolLoop(
   env: Env,
-  knowledge: KnowledgeManifest,
+  knowledge: KnowledgeProvider,
   baseMessages: ChatMessage[],
   replyCap: number,
 ): Promise<{
@@ -205,7 +220,7 @@ async function runToolLoop(
         execResult = await withTimeout(
           () =>
             Promise.resolve(
-              executeKnowledgeTool(knowledge, tc.function.name, tc.function.arguments, { dataDir: env.dataDir }),
+              executeKnowledgeToolWithProvider(knowledge, tc.function.name, tc.function.arguments, { dataDir: env.dataDir }),
             ),
           KNOWLEDGE_TOOL_TIMEOUT_MS,
         );
@@ -245,7 +260,7 @@ async function runToolLoop(
 // F-04: budget is re-checked before each retrieval cycle.
 async function runPersistenceLoop(
   env: Env,
-  knowledge: KnowledgeManifest,
+  knowledge: KnowledgeProvider,
   baseMessages: ChatMessage[],
   replyCap: number,
   userMessage: string,
@@ -526,6 +541,17 @@ export function talkRoutes(
 
     // Classifier said allow — run the main LLM with the KB tool loop.
     const outgoingMessages: ChatMessage[] = [mainSystemPrompt(env), ...session.messages];
+    let knowledgeProvider: KnowledgeProvider;
+    try {
+      knowledgeProvider = createRequestKnowledgeProvider({
+        env,
+        localManifest: knowledge,
+        context: (body.context ?? {}) as KnowledgeRequestContext,
+        conversation: outgoingMessages,
+      });
+    } catch (err) {
+      return c.json({ error: 'knowledge_provider_unavailable', detail: (err as Error).message }, 503);
+    }
     const postGuardBudget = isOverBudget(env);
     if (postGuardBudget.over) {
       return c.json(
@@ -568,7 +594,7 @@ export function talkRoutes(
     let toolLogs: ToolCallLog[] = [];
     let retrievalTrace: RetrievalCycleTrace[] = [];
     try {
-      const result = await runPersistenceLoop(env, knowledge, outgoingMessages, cap, message, requestStart);
+      const result = await runPersistenceLoop(env, knowledgeProvider, outgoingMessages, cap, message, requestStart);
       reply = result.reply;
       model = result.model;
       usage = result.usage;

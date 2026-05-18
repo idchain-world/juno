@@ -10,7 +10,7 @@ import { inboxRoutes } from './routes/inbox.js';
 import { mcpRoutes } from './routes/mcp.js';
 import { healthRoutes } from './routes/health.js';
 import { identityRoutes } from './routes/identity.js';
-import { loadManifest } from './lib/knowledge.js';
+import { loadManifest, type KnowledgeManifest } from './lib/knowledge.js';
 import { purgeOldArtifacts } from './lib/tool-truncate.js';
 import { createSessionStore } from './lib/sessions.js';
 
@@ -19,13 +19,18 @@ const env = loadEnv();
 // Hard-fail at startup if the knowledge dir has any rejectable file. We'd
 // rather crash on boot than serve partially-indexed or attacker-controlled
 // knowledge to callers.
-let knowledge;
+let knowledge: KnowledgeManifest;
 try {
   knowledge = loadManifest(env.knowledgeDir);
   console.log(`[public-agent] knowledge manifest: ${knowledge.entries.size} file(s) from ${knowledge.root}`);
 } catch (err) {
-  console.error(`[public-agent] knowledge load failed: ${(err as Error).message}`);
-  process.exit(1);
+  if (env.knowledgeProvider === 'remote-http' && !env.knowledgeRemoteFallbackLocal) {
+    knowledge = { root: env.knowledgeDir, entries: new Map() };
+    console.log('[public-agent] knowledge manifest skipped: remote-http provider without local fallback');
+  } else {
+    console.error(`[public-agent] knowledge load failed: ${(err as Error).message}`);
+    process.exit(1);
+  }
 }
 
 try {

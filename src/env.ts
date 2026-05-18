@@ -40,6 +40,14 @@ export interface Env {
   maxGuardTokens: number;
   maxMessageChars: number;
   knowledgeDir: string;
+  knowledgeProvider: 'local' | 'remote-http';
+  knowledgeApiUrl: string | null;
+  knowledgeApiAuthMode: 'none' | 'bearer' | 'service';
+  knowledgeApiAuthToken: string | null;
+  knowledgeApiTimeoutMs: number;
+  knowledgeRemoteFallbackLocal: boolean;
+  dappaProjectId: string | null;
+  dappaProjectSlug: string | null;
   upstreamDeadlineMs: number;
   maxRetryAfterMs: number;
   requestDeadlineMs: number;
@@ -127,6 +135,25 @@ export function loadEnv(): Env {
     maxGuardTokens: intOr('MAX_GUARD_TOKENS', process.env.MAX_GUARD_TOKENS, 256),
     maxMessageChars: intOr('MAX_MESSAGE_CHARS', process.env.MAX_MESSAGE_CHARS, 8000),
     knowledgeDir: process.env.PUBLIC_AGENT_KNOWLEDGE_DIR?.trim() || '/app/knowledge',
+    knowledgeProvider:
+      process.env.JUNO_KNOWLEDGE_PROVIDER?.trim() === 'remote-http' ? 'remote-http' : 'local',
+    knowledgeApiUrl: process.env.JUNO_KNOWLEDGE_API_URL?.trim() || null,
+    knowledgeApiAuthMode:
+      process.env.JUNO_KNOWLEDGE_API_AUTH_MODE?.trim() === 'bearer'
+        ? 'bearer'
+        : process.env.JUNO_KNOWLEDGE_API_AUTH_MODE?.trim() === 'service'
+          ? 'service'
+          : 'none',
+    knowledgeApiAuthToken:
+      process.env.JUNO_KNOWLEDGE_API_AUTH_TOKEN?.trim() ||
+      (process.env.JUNO_KNOWLEDGE_API_SECRET_REF?.trim()
+        ? process.env[process.env.JUNO_KNOWLEDGE_API_SECRET_REF.trim().replace(/^env:/, '')]?.trim()
+        : '') ||
+      null,
+    knowledgeApiTimeoutMs: intOr('JUNO_KNOWLEDGE_API_TIMEOUT_MS', process.env.JUNO_KNOWLEDGE_API_TIMEOUT_MS, 2000),
+    knowledgeRemoteFallbackLocal: process.env.JUNO_KNOWLEDGE_REMOTE_FALLBACK_LOCAL === 'true',
+    dappaProjectId: process.env.DAPPA_PROJECT_ID?.trim() || null,
+    dappaProjectSlug: process.env.DAPPA_PROJECT_SLUG?.trim() || null,
     upstreamDeadlineMs: intOr('UPSTREAM_DEADLINE_MS', process.env.UPSTREAM_DEADLINE_MS, 45000),
     maxRetryAfterMs: intOr('MAX_RETRY_AFTER_MS', process.env.MAX_RETRY_AFTER_MS, 10000),
     requestDeadlineMs: intOr('REQUEST_DEADLINE_MS', process.env.REQUEST_DEADLINE_MS, 60000),

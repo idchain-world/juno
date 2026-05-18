@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { Env } from '../env.js';
+import type { ChatMessage } from './openrouter.js';
 import { truncateToolContent } from './tool-truncate.js';
 
 // Strict file-id shape: lowercase letters, digits, dashes, ending in `.md`.
@@ -183,6 +185,23 @@ export interface ReadResult {
   size: number;
 }
 
+export interface KnowledgeRequestContext {
+  chainId?: number;
+  tokenContract?: string;
+  tokenId?: string;
+  projectId?: string;
+  projectSlug?: string;
+  nft?: unknown;
+  adapter8004?: unknown;
+  [key: string]: unknown;
+}
+
+export interface KnowledgeProvider {
+  mode: 'local' | 'remote-http';
+  search(query: string): Promise<SearchHit[]>;
+  read(file_id: string): Promise<ReadResult | null>;
+}
+
 // OpenRouter tool definitions. Keep these as static data so the main LLM
 // sees them verbatim and can't be tricked into inventing a tool it doesn't
 // have.  The server never builds a filesystem path from the model's args —
@@ -337,6 +356,209 @@ export function executeKnowledgeTool(
     content: err,
     log: { ...base, error: err, bytes: err.length, duration_ms: Date.now() - started },
   };
+}
+
+export async function executeKnowledgeToolWithProvider(
+  provider: KnowledgeProvider,
+  name: string,
+  rawArgs: string,
+  opts: { dataDir: string },
+): Promise<{ content: string; log: ToolCallLog }> {
+  const started = Date.now();
+  const base: ToolCallLog = {
+    name,
+    args: {},
+    ok: false,
+    bytes: 0,
+    result_count: 0,
+    duration_ms: 0,
+  };
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = rawArgs ? JSON.parse(rawArgs) : {};
+  } catch {
+    const err = 'tool_error: arguments must be a JSON object';
+    return { content: err, log: { ...base, error: err, bytes: err.length, duration_ms: Date.now() - started } };
+  }
+  base.args = parsed;
+
+  try {
+    if (name === 'search_knowledge') {
+      const q = typeof parsed.query === 'string' ? parsed.query : '';
+      if (!q || q.length > 200) {
+        const err = 'tool_error: query must be a non-empty string up to 200 chars';
+        return { content: err, log: { ...base, error: err, bytes: err.length, duration_ms: Date.now() - started } };
+      }
+      const hits = await provider.search(q);
+      const payload = JSON.stringify({ hits });
+      return {
+        content: payload,
+        log: { ...base, ok: true, result_count: hits.length, bytes: payload.length, duration_ms: Date.now() - started },
+      };
+    }
+
+    if (name === 'read_knowledge') {
+      const fid = typeof parsed.file_id === 'string' ? parsed.file_id : '';
+      if (!fid) {
+        const err = 'tool_error: file_id required';
+        return { content: err, log: { ...base, error: err, bytes: err.length, duration_ms: Date.now() - started } };
+      }
+      const result = await provider.read(fid);
+      if (!result) {
+        const err = `tool_error: file_id "${fid}" not found in knowledge base`;
+        return { content: err, log: { ...base, error: err, bytes: err.length, duration_ms: Date.now() - started } };
+      }
+      const trimmed = truncateToolContent(opts.dataDir, result.file_id, result.content);
+      const payload = JSON.stringify({ file_id: result.file_id, title: result.title, content: trimmed.content });
+      return {
+        content: payload,
+        log: {
+          ...base,
+          ok: true,
+          result_count: 1,
+          bytes: payload.length,
+          duration_ms: Date.now() - started,
+          ...(trimmed.truncated ? { truncated: true } : {}),
+          ...(trimmed.artifact ? { artifact: trimmed.artifact } : {}),
+        },
+      };
+    }
+  } catch (err) {
+    const msg = `tool_error: ${(err as Error).message}`;
+    return { content: msg, log: { ...base, error: msg, bytes: msg.length, duration_ms: Date.now() - started } };
+  }
+
+  const err = `tool_error: unknown tool "${name}"`;
+  return { content: err, log: { ...base, error: err, bytes: err.length, duration_ms: Date.now() - started } };
+}
+
+export function createLocalKnowledgeProvider(manifest: KnowledgeManifest): KnowledgeProvider {
+  return {
+    mode: 'local',
+    search: async (query) => searchKnowledge(manifest, query),
+    read: async (file_id) => readKnowledge(manifest, file_id),
+  };
+}
+
+export function createRequestKnowledgeProvider(input: {
+  env: Env;
+  localManifest: KnowledgeManifest;
+  context: KnowledgeRequestContext;
+  conversation: ChatMessage[];
+}): KnowledgeProvider {
+  const local = createLocalKnowledgeProvider(input.localManifest);
+  if (input.env.knowledgeProvider !== 'remote-http') return local;
+  if (!input.env.knowledgeApiUrl) {
+    if (input.env.knowledgeRemoteFallbackLocal) return local;
+    throw new Error('JUNO_KNOWLEDGE_API_URL is required when JUNO_KNOWLEDGE_PROVIDER=remote-http');
+  }
+  return createRemoteHttpKnowledgeProvider({ ...input, fallback: input.env.knowledgeRemoteFallbackLocal ? local : null });
+}
+
+function createRemoteHttpKnowledgeProvider(input: {
+  env: Env;
+  context: KnowledgeRequestContext;
+  conversation: ChatMessage[];
+  fallback: KnowledgeProvider | null;
+}): KnowledgeProvider {
+  const docs = new Map<string, ReadResult>();
+  const endpoint = knowledgeQueryEndpoint(input.env);
+
+  return {
+    mode: 'remote-http',
+    async search(query: string): Promise<SearchHit[]> {
+      try {
+        const response = await remoteFetch(input.env, endpoint, {
+          query,
+          conversation: input.conversation
+            .filter((m) => m.role === 'user' || m.role === 'assistant')
+            .map((m) => ({ role: m.role, content: m.content })),
+          context: {
+            ...(input.env.dappaProjectId ? { projectId: input.env.dappaProjectId } : {}),
+            ...(input.env.dappaProjectSlug ? { projectSlug: input.env.dappaProjectSlug } : {}),
+            ...input.context,
+          },
+          topK: KNOWLEDGE_SEARCH_MAX_RESULTS,
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(extractRemoteError(data) ?? `remote knowledge returned ${response.status}`);
+        const documents = normalizeRemoteDocuments(data);
+        docs.clear();
+        for (const document of documents) docs.set(document.file_id, document);
+        return documents.slice(0, KNOWLEDGE_SEARCH_MAX_RESULTS).map((document) => ({
+          file_id: document.file_id,
+          title: document.title,
+          snippet: document.content.replace(/\s+/g, ' ').trim().slice(0, KNOWLEDGE_SNIPPET_CHARS),
+        }));
+      } catch (err) {
+        if (input.fallback) return input.fallback.search(query);
+        throw err;
+      }
+    },
+    async read(file_id: string): Promise<ReadResult | null> {
+      const cached = docs.get(file_id);
+      if (cached) return cached;
+      if (input.fallback) return input.fallback.read(file_id);
+      return null;
+    },
+  };
+}
+
+function knowledgeQueryEndpoint(env: Env): string {
+  const raw = env.knowledgeApiUrl?.replace(/\/+$/, '') ?? '';
+  if (/\/knowledge\/query$/.test(raw)) return raw;
+  const slug = env.dappaProjectSlug ?? env.dappaProjectId;
+  if (!slug) throw new Error('DAPPA_PROJECT_SLUG or DAPPA_PROJECT_ID is required for remote knowledge');
+  return `${raw}/api/projects/${encodeURIComponent(slug)}/knowledge/query`;
+}
+
+async function remoteFetch(env: Env, url: string, body: unknown): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), env.knowledgeApiTimeoutMs);
+  const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json' };
+  if (env.knowledgeApiAuthMode === 'bearer' && env.knowledgeApiAuthToken) {
+    headers.authorization = `Bearer ${env.knowledgeApiAuthToken}`;
+  } else if (env.knowledgeApiAuthMode === 'service' && env.knowledgeApiAuthToken) {
+    headers['x-dappa-knowledge-token'] = env.knowledgeApiAuthToken;
+  }
+  try {
+    return await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal });
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') throw new Error(`remote knowledge timeout after ${env.knowledgeApiTimeoutMs}ms`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function normalizeRemoteDocuments(data: unknown): ReadResult[] {
+  const record = data && typeof data === 'object' ? (data as Record<string, unknown>) : {};
+  const values = Array.isArray(record.documents) ? record.documents : [];
+  return values.flatMap((value, index) => {
+    if (!value || typeof value !== 'object') return [];
+    const doc = value as Record<string, unknown>;
+    if (typeof doc.content !== 'string') return [];
+    const id = typeof doc.id === 'string' && doc.id.trim() ? doc.id.trim() : `remote-${index + 1}`;
+    const file_id = KNOWLEDGE_ID_RE.test(id) ? id : `${id.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') || `remote-${index + 1}`}.md`;
+    return [{
+      file_id,
+      title: typeof doc.title === 'string' && doc.title.trim() ? doc.title.trim() : file_id.replace(/\.md$/, ''),
+      content: doc.content.slice(0, KNOWLEDGE_MAX_FILE_BYTES),
+      size: Buffer.byteLength(doc.content),
+    }];
+  });
+}
+
+function extractRemoteError(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null;
+  const error = (data as Record<string, unknown>).error;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const message = (error as Record<string, unknown>).message;
+    if (typeof message === 'string') return message;
+  }
+  return null;
 }
 
 // Wraps raw tool output in markers that tell the main LLM "this is data,
