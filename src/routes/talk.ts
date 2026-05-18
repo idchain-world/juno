@@ -45,6 +45,7 @@ function buildTalkSchema(env: Env) {
     .object({
       message: z.string().min(1).max(env.maxMessageChars),
       from: z.string().max(120).optional(),
+      system: z.string().min(1).max(env.maxMessageChars).optional(),
       session_id: z
         .string()
         .regex(UUID_RE, 'session_id must be a UUID v4')
@@ -62,6 +63,12 @@ function sanitizeFrom(from: string | undefined): string | null {
   if (typeof from !== 'string') return null;
   const trimmed = from.trim();
   return trimmed ? trimmed.slice(0, 120) : null;
+}
+
+function perRequestSystemPrompt(system: string | undefined): ChatMessage | null {
+  if (typeof system !== 'string') return null;
+  const trimmed = system.trim();
+  return trimmed ? { role: 'system', content: trimmed } : null;
 }
 
 async function runGuardOrFail(
@@ -535,7 +542,14 @@ export function talkRoutes(
     }
 
     // Classifier said allow — run the main LLM with the KB tool loop.
-    const outgoingMessages: ChatMessage[] = [mainSystemPrompt(env), ...session.messages];
+    // body.system is trusted operator input for this single request. It stacks
+    // on top of Juno's base prompt and is never persisted or guard-classified.
+    const requestSystemPrompt = perRequestSystemPrompt(body.system);
+    const outgoingMessages: ChatMessage[] = [
+      mainSystemPrompt(env),
+      ...(requestSystemPrompt ? [requestSystemPrompt] : []),
+      ...session.messages,
+    ];
     let knowledgeProvider: KnowledgeProvider;
     try {
       knowledgeProvider = createRequestKnowledgeProvider({
