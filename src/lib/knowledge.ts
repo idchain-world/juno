@@ -574,8 +574,31 @@ function mergeContext(...contexts: Array<Record<string, unknown> | null | undefi
   return Object.assign({}, ...contexts.filter(Boolean));
 }
 
+// `x-juno-context` carries request context to the MCP server in a header.
+// HTTP headers have a hard size ceiling at most proxies — a few KB over and
+// the request is rejected (HTTP 494/431). So keep this header small and
+// generic: include only scalar values (the small identity fields), dropping
+// nested objects/arrays and any oversized string. Rich context still rides in
+// the `tools/call` JSON-RPC body, which has no size limit.
+const MCP_CONTEXT_HEADER_MAX_VALUE = 1024;
+
 function mcpContextHeaders(context: Record<string, unknown>): Record<string, string> {
-  return Object.keys(context).length > 0 ? { 'x-juno-context': JSON.stringify(context) } : {};
+  const scoped: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(context)) {
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      scoped[key] = value;
+    } else if (
+      typeof value === 'string' &&
+      value.length <= MCP_CONTEXT_HEADER_MAX_VALUE
+    ) {
+      scoped[key] = value;
+    }
+    // Objects, arrays, null/undefined, and oversized strings are omitted —
+    // they belong in the request body, not a header.
+  }
+  return Object.keys(scoped).length > 0
+    ? { 'x-juno-context': JSON.stringify(scoped) }
+    : {};
 }
 
 function toOpenRouterToolDefinition(tool: unknown): ToolDefinition[] {

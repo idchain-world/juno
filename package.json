@@ -1,6 +1,6 @@
 {
   "name": "@idchain/juno",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": false,
   "description": "Juno — a public-facing, capability-limited agent runtime. Hono + OpenRouter, guarded and rate-limited, safe to point at the internet.",
   "repository": {

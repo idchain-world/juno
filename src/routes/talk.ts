@@ -155,6 +155,23 @@ function writeGuardedInbox(
 }
 
 // Runs the tool-call loop after the guard allows a message. Executes any
+// Discover the knowledge tool definitions for a turn. Tool discovery must
+// never kill the turn: if it fails (e.g. the MCP server is unreachable or
+// rejects the request), degrade to no knowledge tools and let the model
+// answer from the system prompt + request context.
+async function discoverToolDefinitions(knowledge: KnowledgeProvider) {
+  if (!knowledge.toolDefinitions) return KNOWLEDGE_TOOL_DEFS;
+  try {
+    return await knowledge.toolDefinitions();
+  } catch (err) {
+    console.error(
+      '[public-agent] /talk knowledge tool discovery failed, continuing without knowledge tools:',
+      err,
+    );
+    return [];
+  }
+}
+
 // knowledge tool calls the model requested, enforces per-request caps, and
 // returns the final user-visible reply plus combined usage.
 async function runToolLoop(
@@ -175,7 +192,7 @@ async function runToolLoop(
   let combinedUsage = { prompt: 0, completion: 0, total: 0 };
   let model = env.openRouterModel;
   let callBudget = KNOWLEDGE_MAX_TOOL_CALLS_PER_REQUEST;
-  const toolDefinitions = knowledge.toolDefinitions ? await knowledge.toolDefinitions() : KNOWLEDGE_TOOL_DEFS;
+  const toolDefinitions = await discoverToolDefinitions(knowledge);
 
   // Loop: ask the model, execute tool calls if any, re-ask. Bail when the
   // model returns a plain content message or we exhaust the call budget.
