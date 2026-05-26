@@ -5,6 +5,7 @@
 #
 # Or via env:
 #   sudo OPENROUTER_API_KEY=sk-or-... ./juno-add.sh <name> <domain>
+#   sudo JUNO_MCP_AGENT_DOMAIN=<name>.<dashed-ip>.mcp.dappa.ai ./juno-add.sh <name> <domain>
 #
 # Renders per-instance env + Caddy site block, allocates a free port pair,
 # starts the systemd instance, reloads Caddy.
@@ -73,6 +74,10 @@ esac
 if ! printf '%s' "$DOMAIN" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'; then
   die "invalid domain '$DOMAIN'"
 fi
+MCP_DOMAIN="${JUNO_MCP_AGENT_DOMAIN:-}"
+if [ -n "$MCP_DOMAIN" ] && ! printf '%s' "$MCP_DOMAIN" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'; then
+  die "invalid MCP domain '$MCP_DOMAIN'"
+fi
 
 ENV_FILE="${ENV_DIR}/${NAME}.env"
 SITE_FILE="${CADDY_DIR}/${NAME}.caddy"
@@ -85,6 +90,11 @@ INSTANCE_DIR="${JUNO_ROOT}/instances/${NAME}"
 if [ -d "$CADDY_DIR" ]; then
   if grep -rlE "^[[:space:]]*${DOMAIN}[[:space:]]*\{" "$CADDY_DIR" 2>/dev/null | grep -q .; then
     die "domain '$DOMAIN' is already served by another juno instance"
+  fi
+  if [ -n "$MCP_DOMAIN" ] && [ "$MCP_DOMAIN" != "$DOMAIN" ]; then
+    if grep -rlE "^[[:space:]]*${MCP_DOMAIN}[[:space:]]*\{" "$CADDY_DIR" 2>/dev/null | grep -q .; then
+      die "MCP domain '$MCP_DOMAIN' is already served by another juno instance"
+    fi
   fi
 fi
 
@@ -170,6 +180,48 @@ sed \
   -e "s|__PUBLIC_PORT__|${PUBLIC_PORT}|g" \
   "$SITE_TEMPLATE" > "$SITE_TMP"
 
+if [[ "$DOMAIN" == *.mcp.dappa.ai ]]; then
+  awk '
+    /^[[:space:]]*[a-z0-9.-]+[[:space:]]*\{$/ && !inserted {
+      print
+      print "    tls {"
+      print "        on_demand"
+      print "    }"
+      print ""
+      inserted=1
+      next
+    }
+    { print }
+  ' "$SITE_TMP" > "${SITE_TMP}.tls"
+  mv "${SITE_TMP}.tls" "$SITE_TMP"
+fi
+
+if [ -n "$MCP_DOMAIN" ] && [ "$MCP_DOMAIN" != "$DOMAIN" ]; then
+  cat >> "$SITE_TMP" <<CADDY
+
+${MCP_DOMAIN} {
+    tls {
+        on_demand
+    }
+
+    encode gzip
+
+    reverse_proxy 127.0.0.1:${PUBLIC_PORT}
+
+    @operator path /inbox*
+    respond @operator 404
+
+    log {
+        output file /var/log/caddy/juno-${NAME}.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+        format console
+    }
+}
+CADDY
+fi
+
 # ── validate Caddy config with the new snippet in place (atomically) ─────
 # Move the site file into place first, then validate. If validation fails,
 # pull it back out.
@@ -238,6 +290,7 @@ juno-add: instance '${NAME}' provisioned.
 
   name          ${NAME}
   domain        ${DOMAIN}
+  mcp domain    ${MCP_DOMAIN:-none}
   public port   127.0.0.1:${PUBLIC_PORT}
   operator port 127.0.0.1:${OPERATOR_PORT}
   env           ${ENV_FILE}
