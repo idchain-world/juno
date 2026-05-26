@@ -26,6 +26,7 @@ set -euo pipefail
 JUNO_ROOT="${JUNO_ROOT:-/opt/juno}"
 ENV_DIR="${JUNO_ENV_DIR:-/etc/juno}"
 CADDY_DIR="${JUNO_CADDY_DIR:-/etc/caddy/juno.d}"
+CADDY_LOG_DIR="${JUNO_CADDY_LOG_DIR:-/var/log/caddy}"
 STATE_DIR="${JUNO_STATE_DIR:-/var/lib/juno}"
 LOCK_FILE="${STATE_DIR}/alloc.lock"
 TEMPLATE_DIR="${JUNO_TEMPLATE_DIR:-${JUNO_ROOT}/scripts}"
@@ -83,8 +84,128 @@ ENV_FILE="${ENV_DIR}/${NAME}.env"
 SITE_FILE="${CADDY_DIR}/${NAME}.caddy"
 INSTANCE_DIR="${JUNO_ROOT}/instances/${NAME}"
 
-[ -e "$ENV_FILE" ]  && die "instance '$NAME' already exists (env file: $ENV_FILE)"
-[ -e "$SITE_FILE" ] && die "instance '$NAME' already has a Caddy site block: $SITE_FILE"
+caddy_site_has_upstream() {
+  local file="$1"
+  local domain="$2"
+  local upstream_port="$3"
+  awk -v domain="$domain" -v upstream="127.0.0.1:$upstream_port" '
+    $1 == domain && $2 == "{" { in_site=1; depth=1; next }
+    in_site {
+      if ($1 == "reverse_proxy" && $2 == upstream) found=1
+      opens=gsub(/\{/, "{")
+      closes=gsub(/\}/, "}")
+      depth += opens - closes
+      if (depth <= 0) exit(found ? 0 : 1)
+    }
+    END { if (!found) exit 1 }
+  ' "$file"
+}
+
+append_mcp_caddy_site() {
+  local mcp_domain="$1"
+  local public_port="$2"
+  local backup_file
+
+  backup_file=$(mktemp "${SITE_FILE}.backup.XXXXXX")
+  cp "$SITE_FILE" "$backup_file"
+
+  cat >> "$SITE_FILE" <<CADDY
+
+${mcp_domain} {
+    tls {
+        on_demand
+    }
+
+    encode gzip
+
+    reverse_proxy 127.0.0.1:${public_port}
+
+    @operator path /inbox*
+    respond @operator 404
+
+    log {
+        output file /var/log/caddy/juno-${NAME}.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+        format console
+    }
+}
+CADDY
+
+  if ! caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile >/tmp/juno-add-caddy.log 2>&1; then
+    cat "$backup_file" > "$SITE_FILE"
+    cat /tmp/juno-add-caddy.log >&2
+    rm -f "$backup_file"
+    die "invalid Caddy config after adding MCP domain '$mcp_domain'"
+  fi
+
+  rm -f "$backup_file"
+}
+
+existing_instance_success() {
+  [ -f "$ENV_FILE" ] || return 1
+  [ -f "$SITE_FILE" ] || return 1
+
+  local public_port public_url expected_url existing_site
+  public_port=$(grep -E '^PUBLIC_AGENT_PORT=' "$ENV_FILE" | tail -n 1 | cut -d= -f2-)
+  public_url=$(grep -E '^PUBLIC_URL=' "$ENV_FILE" | tail -n 1 | cut -d= -f2-)
+  expected_url="https://${DOMAIN}"
+
+  [ -n "$public_port" ] || die "instance '$NAME' already exists but is missing PUBLIC_AGENT_PORT in $ENV_FILE"
+  [ "$public_url" = "$expected_url" ] || die "instance '$NAME' already exists for ${public_url:-unknown}, not ${expected_url}"
+  caddy_site_has_upstream "$SITE_FILE" "$DOMAIN" "$public_port" || die "instance '$NAME' already exists but ${DOMAIN} does not proxy to 127.0.0.1:${public_port}"
+
+  if [ -n "$MCP_DOMAIN" ] && [ "$MCP_DOMAIN" != "$DOMAIN" ]; then
+    if ! caddy_site_has_upstream "$SITE_FILE" "$MCP_DOMAIN" "$public_port"; then
+      append_mcp_caddy_site "$MCP_DOMAIN" "$public_port"
+    fi
+  fi
+
+  if [ -d "$CADDY_DIR" ]; then
+    while IFS= read -r existing_site; do
+      [ -n "$existing_site" ] || continue
+      if [ "$existing_site" != "$SITE_FILE" ] && ! caddy_site_has_upstream "$existing_site" "$DOMAIN" "$public_port"; then
+        die "domain '$DOMAIN' is already served by another juno instance"
+      fi
+    done < <(grep -rlE "^[[:space:]]*${DOMAIN}[[:space:]]*\{" "$CADDY_DIR" 2>/dev/null || true)
+
+    if [ -n "$MCP_DOMAIN" ] && [ "$MCP_DOMAIN" != "$DOMAIN" ]; then
+      while IFS= read -r existing_site; do
+        [ -n "$existing_site" ] || continue
+        if [ "$existing_site" != "$SITE_FILE" ] && ! caddy_site_has_upstream "$existing_site" "$MCP_DOMAIN" "$public_port"; then
+          die "MCP domain '$MCP_DOMAIN' is already served by another juno instance"
+        fi
+      done < <(grep -rlE "^[[:space:]]*${MCP_DOMAIN}[[:space:]]*\{" "$CADDY_DIR" 2>/dev/null || true)
+    fi
+  fi
+
+  mkdir -p "${INSTANCE_DIR}/data" "${INSTANCE_DIR}/knowledge"
+  if id juno >/dev/null 2>&1; then
+    chown -R juno:juno "$INSTANCE_DIR"
+  fi
+
+  systemctl daemon-reload
+  systemctl enable "juno@${NAME}.service" >/dev/null
+  if ! grep -q '__OPENROUTER_API_KEY__' "$ENV_FILE"; then
+    systemctl restart "juno@${NAME}.service"
+  fi
+  if ! timeout 10 systemctl reload caddy; then
+    echo "juno-add: caddy reload timed out or failed; restarting caddy" >&2
+    systemctl restart caddy
+  fi
+
+  echo "juno-add: instance '${NAME}' already provisioned; existing ${DOMAIN} -> 127.0.0.1:${public_port} is valid."
+  return 0
+}
+
+if [ -e "$ENV_FILE" ] || [ -e "$SITE_FILE" ]; then
+  if existing_instance_success; then
+    exit 0
+  fi
+  [ -e "$ENV_FILE" ]  && die "instance '$NAME' already exists (env file: $ENV_FILE)"
+  [ -e "$SITE_FILE" ] && die "instance '$NAME' already has a Caddy site block: $SITE_FILE"
+fi
 
 # Domain collision check across all existing site blocks.
 if [ -d "$CADDY_DIR" ]; then
@@ -255,8 +376,8 @@ fi
 # as its runtime user; but if the file has ever been created by something
 # else (root from a manual test, a previous install running as a different
 # user), the reload will fail with "permission denied". Own it up front.
-CADDY_LOG="/var/log/caddy/juno-${NAME}.log"
-mkdir -p /var/log/caddy
+CADDY_LOG="${CADDY_LOG_DIR}/juno-${NAME}.log"
+mkdir -p "$CADDY_LOG_DIR"
 touch "$CADDY_LOG"
 if id caddy >/dev/null 2>&1; then
   chown caddy:caddy "$CADDY_LOG"
