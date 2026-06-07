@@ -1,13 +1,14 @@
 import type { Env } from '../env.js';
 import type { ChatMessage } from './openrouter.js';
+import type { SessionContext } from './session-context.js';
 
 // XML-sectioned system prompts. The structure (<role>, <definitions>,
 // <analysis_guidance>, <output_format>, <behavioral_rules>) is copied from
 // Superagent's guard prompt — it reads cleanly to humans and gives the model
 // stable anchors we can tell it to respect via behavioral_rules.
 
-export function mainSystemPrompt(env: Env): ChatMessage {
-  const content =
+export function mainSystemPrompt(env: Env, sessionContext?: SessionContext | null): ChatMessage {
+  let content =
 `<role>
 You are ${env.agentName}, a lightweight public-facing assistant. Respond concisely. Use the configured knowledge tools for questions that may depend on the operator-provided knowledge content.
 </role>
@@ -53,6 +54,13 @@ Good:
 10. Never announce what you are about to do, never preview intent, never promise future work, and never ask the user for permission to look something up, read a file, or search. Do not produce any assistant text that contains "I found", "I will search", "Let me search", "would you like me to", "Would it help if", "Should I look up", "may help", or any similar hedge. When search_knowledge returns hits, your next action MUST be a read_knowledge tool call in the SAME turn — never emit prose between search and read, never reply to the user with a search summary, never stop after search. The user only ever sees the final synthesized answer. Good: <silently: search, then read, then reply> "The quickstart uses a setup script that detects available runtimes..." Bad: "I found a quickstart guide that may help with setup."
 11. Reproduce copy-pasteable content VERBATIM in fenced code blocks, even when it makes the reply longer. This overrides the terseness rule in #8. "Copy-pasteable" means: shell commands, code, configuration, URLs, file paths, and prompts or instructions the user will paste into another system. Never paraphrase, summarize, shorten, or reformat these — the user is going to copy them and any edit breaks the paste. Preserve the exact characters, punctuation, quotes, angle brackets, blockquote markers (\`>\`), and URL path.
 </behavioral_rules>`;
+  const sources = sessionContext?.sources ?? [];
+  if (sources.length > 0) {
+    content +=
+      `\n\n## Session context\n\n` +
+      `The following sources are persistent context for this session. Treat them as part of who you are and what you know.\n\n` +
+      sources.map((source) => `### ${source.key}\n\n${source.content}`).join('\n\n');
+  }
   return { role: 'system', content };
 }
 

@@ -4,11 +4,12 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createSessionStore } from '../src/lib/sessions.js';
 import { loadManifest } from '../src/lib/knowledge.js';
+import { mainSystemPrompt } from '../src/lib/prompts.js';
 import { talkRoutes } from '../src/routes/talk.js';
 import { makeEnv } from './helpers/makeEnv.js';
 import { req } from './helpers/httpClient.js';
 
-function makeTalkHarness() {
+function makeTalkHarness(envOverrides = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'juno-talk-system-'));
   const dataDir = path.join(root, 'data');
   const knowledgeDir = path.join(root, 'knowledge');
@@ -22,15 +23,31 @@ function makeTalkHarness() {
     trustedProxy: true,
     maxGuardTokens: 256,
     maxReplyTokens: 1024,
+    ...envOverrides,
   });
   const app = talkRoutes(env, loadManifest(knowledgeDir), createSessionStore(env));
-  return { app, root };
+  return { app, env, root };
 }
 
-function mockOpenRouter(calls: unknown[]) {
+function mockOpenRouter(
+  calls: unknown[],
+  sessionContextResponse?: { status: number; body?: unknown },
+) {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes('/api/internal/juno/session-context')) {
+        if (!sessionContextResponse) return new Response('not found', { status: 404 });
+        return new Response(
+          sessionContextResponse.body === undefined ? null : JSON.stringify(sessionContextResponse.body),
+          {
+            status: sessionContextResponse.status,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }
+
       const body = JSON.parse(String(init?.body ?? '{}'));
       calls.push(body);
 
@@ -154,5 +171,89 @@ describe('/talk per-request system prompt', () => {
     const messages = mainCall(calls).messages;
     expect(messages.map((m) => m.role)).toEqual(['system', 'user']);
     expect(messages[1]).toEqual({ role: 'user', content: 'hello without system' });
+  });
+
+  it('injects session-context content into the main system prompt when fetch succeeds', async () => {
+    const calls: unknown[] = [];
+    const { app, root } = makeTalkHarness({
+      mcpEndpointUrl: 'https://dappa.example/api/internal/juno/mcp',
+      mcpServiceToken: 'service-token',
+      requestContext: { projectSlug: 'normies', chainId: '8453', tokenContract: '0xabc' },
+    });
+    mockOpenRouter(calls, {
+      status: 200,
+      body: { sources: [{ key: 'persona', content: 'You know the Normies canon.' }] },
+    });
+
+    try {
+      const res = await req(app, 'POST', '/talk', {
+        headers: { 'x-forwarded-for': '203.0.113.10' },
+        body: { message: 'hello', context: { tokenId: '7' } },
+      });
+
+      expect(res.status).toBe(200);
+      const content = mainCall(calls).messages[0]?.content ?? '';
+      expect(content).toContain('## Session context');
+      expect(content).toContain('### persona');
+      expect(content).toContain('You know the Normies canon.');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the system prompt unchanged when session-context fetch returns null', async () => {
+    const calls: unknown[] = [];
+    const { app, env, root } = makeTalkHarness({
+      mcpEndpointUrl: 'https://dappa.example/api/internal/juno/mcp',
+      mcpServiceToken: 'service-token',
+    });
+    mockOpenRouter(calls, { status: 404 });
+
+    try {
+      const res = await req(app, 'POST', '/talk', {
+        headers: { 'x-forwarded-for': '203.0.113.10' },
+        body: { message: 'hello', context: { tokenId: '7' } },
+      });
+
+      expect(res.status).toBe(200);
+      expect(mainCall(calls).messages[0]?.content).toBe(mainSystemPrompt(env).content);
+      expect(mainCall(calls).messages[0]?.content).not.toContain('## Session context');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses cached session-context on the second turn of the same session', async () => {
+    const calls: unknown[] = [];
+    const { app, root } = makeTalkHarness({
+      mcpEndpointUrl: 'https://dappa.example/api/internal/juno/mcp',
+      mcpServiceToken: 'service-token',
+    });
+    mockOpenRouter(calls, {
+      status: 200,
+      body: { sources: [{ key: 'persona', content: 'Cached context.' }] },
+    });
+
+    try {
+      const first = await req(app, 'POST', '/talk', {
+        headers: { 'x-forwarded-for': '203.0.113.10' },
+        body: { message: 'first', context: { tokenId: '7' } },
+      });
+      const firstBody = first.body as { session_id: string };
+      const second = await req(app, 'POST', '/talk', {
+        headers: { 'x-forwarded-for': '203.0.113.10' },
+        body: { message: 'second', session_id: firstBody.session_id, context: { tokenId: '7' } },
+      });
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      const sessionContextCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/api/internal/juno/session-context'),
+      );
+      expect(sessionContextCalls).toHaveLength(1);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

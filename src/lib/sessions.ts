@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Env } from '../env.js';
 import type { ChatMessage } from './openrouter.js';
+import type { SessionContext } from './session-context.js';
 
 // Session store for /talk. Public clients (REST + MCP) cannot be trusted to
 // maintain history themselves, so the server threads turns by session_id.
@@ -20,11 +21,17 @@ export interface Session {
   createdAt: number;
   lastAccessedAt: number;
   turnCount: number;
+  sessionContextCache?: {
+    key: string;
+    value: SessionContext | null;
+  };
 }
 
 export interface SessionStore {
   getOrCreate(sessionId?: string | null): { session: Session; created: boolean };
   append(id: string, role: ChatMessage['role'], content: string): void;
+  getSessionContext(id: string, key: string): SessionContext | null | undefined;
+  setSessionContext(id: string, key: string, value: SessionContext | null): void;
   has(sessionId: string): boolean;
   all(): Session[];
   purgeIdle(now?: number): number;
@@ -152,6 +159,18 @@ export function createSessionStore(env: Env): SessionStore {
       s.messages.push({ role, content });
       s.lastAccessedAt = Date.now();
       if (role === 'user') s.turnCount += 1;
+      writeSession(env, s);
+    },
+    getSessionContext(id, key) {
+      const s = sessions.get(id);
+      if (!s || s.sessionContextCache?.key !== key) return undefined;
+      return s.sessionContextCache.value;
+    },
+    setSessionContext(id, key, value) {
+      const s = sessions.get(id);
+      if (!s) return;
+      s.sessionContextCache = { key, value };
+      s.lastAccessedAt = Date.now();
       writeSession(env, s);
     },
     has(sessionId) {

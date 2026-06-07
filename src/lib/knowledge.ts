@@ -472,7 +472,7 @@ function createMcpKnowledgeProvider(input: {
   context: KnowledgeRequestContext;
 }): KnowledgeProvider {
   const endpoint = validateMcpEndpoint(input.env);
-  const requestContext = mergeContext(input.env.requestContext, input.context);
+  const requestContext = mergeKnowledgeContext(input.env.requestContext, input.context);
   const headers = mcpContextHeaders(requestContext);
   let initialized = false;
   let cachedTools: ToolDefinition[] | null = null;
@@ -570,7 +570,7 @@ function validateMcpEndpoint(env: Env): string {
   return endpoint.toString();
 }
 
-function mergeContext(...contexts: Array<Record<string, unknown> | null | undefined>): Record<string, unknown> {
+export function mergeKnowledgeContext(...contexts: Array<Record<string, unknown> | null | undefined>): Record<string, unknown> {
   return Object.assign({}, ...contexts.filter(Boolean));
 }
 
@@ -582,7 +582,7 @@ function mergeContext(...contexts: Array<Record<string, unknown> | null | undefi
 // the `tools/call` JSON-RPC body, which has no size limit.
 const MCP_CONTEXT_HEADER_MAX_VALUE = 1024;
 
-function mcpContextHeaders(context: Record<string, unknown>): Record<string, string> {
+export function mcpContextHeaders(context: Record<string, unknown>): Record<string, string> {
   const scoped: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(context)) {
     if (typeof value === 'number' || typeof value === 'boolean') {
@@ -726,7 +726,7 @@ function createRemoteHttpKnowledgeProvider(input: {
           conversation: input.conversation
             .filter((m) => m.role === 'user' || m.role === 'assistant')
             .map((m) => ({ role: m.role, content: m.content })),
-          context: mergeContext(input.env.requestContext, input.context),
+          context: mergeKnowledgeContext(input.env.requestContext, input.context),
           topK: KNOWLEDGE_SEARCH_MAX_RESULTS,
         });
         const data = await response.json().catch(() => null);

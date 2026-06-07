@@ -17,12 +17,14 @@ import {
   KNOWLEDGE_TOOL_TIMEOUT_MS,
   executeKnowledgeToolWithProvider,
   createRequestKnowledgeProvider,
+  mergeKnowledgeContext,
   wrapToolContent,
   type KnowledgeRequestContext,
   type KnowledgeManifest,
   type KnowledgeProvider,
   type ToolCallLog,
 } from '../lib/knowledge.js';
+import { fetchSessionContext, type ProjectContext, type SessionContext } from '../lib/session-context.js';
 import {
   MAX_RETRIEVAL_CYCLES,
   assessThresholds,
@@ -69,6 +71,44 @@ function perRequestSystemPrompt(system: string | undefined): ChatMessage | null 
   if (typeof system !== 'string') return null;
   const trimmed = system.trim();
   return trimmed ? { role: 'system', content: trimmed } : null;
+}
+
+function projectContext(env: Env, context: KnowledgeRequestContext): ProjectContext {
+  const merged = mergeKnowledgeContext(env.requestContext, context);
+  const rawTokenId = merged.tokenId ?? merged.resourceId;
+  const tokenId =
+    typeof rawTokenId === 'string' && rawTokenId.trim()
+      ? rawTokenId.trim()
+      : typeof rawTokenId === 'number' && Number.isFinite(rawTokenId)
+        ? String(rawTokenId)
+        : null;
+  return { context: merged, tokenId };
+}
+
+function sessionContextCacheKey(project: ProjectContext): string {
+  const identity: Record<string, unknown> = {};
+  for (const key of ['projectId', 'projectSlug', 'tenantSlug', 'chainId', 'tokenContract', 'tokenId']) {
+    const value = project.context[key];
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      identity[key] = value;
+    }
+  }
+  identity.tokenId = project.tokenId;
+  return JSON.stringify(identity);
+}
+
+async function sessionContextForTurn(
+  env: Env,
+  sessions: SessionStore,
+  session: Session,
+  project: ProjectContext,
+): Promise<SessionContext | null> {
+  const key = sessionContextCacheKey(project);
+  const cached = sessions.getSessionContext(session.id, key);
+  if (cached !== undefined) return cached;
+  const value = await fetchSessionContext(env, project);
+  sessions.setSessionContext(session.id, key, value);
+  return value;
 }
 
 async function runGuardOrFail(
@@ -561,9 +601,12 @@ export function talkRoutes(
     // Classifier said allow — run the main LLM with the KB tool loop.
     // body.system is trusted operator input for this single request. It stacks
     // on top of Juno's base prompt and is never persisted or guard-classified.
+    const requestContext = (body.context ?? {}) as KnowledgeRequestContext;
+    const project = projectContext(env, requestContext);
+    const sessionContext = await sessionContextForTurn(env, sessions, session, project);
     const requestSystemPrompt = perRequestSystemPrompt(body.system);
     const outgoingMessages: ChatMessage[] = [
-      mainSystemPrompt(env),
+      mainSystemPrompt(env, sessionContext),
       ...(requestSystemPrompt ? [requestSystemPrompt] : []),
       ...session.messages,
     ];
@@ -572,7 +615,7 @@ export function talkRoutes(
       knowledgeProvider = createRequestKnowledgeProvider({
         env,
         localManifest: knowledge,
-        context: (body.context ?? {}) as KnowledgeRequestContext,
+        context: requestContext,
         conversation: outgoingMessages,
       });
     } catch (err) {
