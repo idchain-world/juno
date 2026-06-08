@@ -27,6 +27,10 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
+    "dev:profiles": "tsx scripts/dev-profiles.ts",
+    "vibes": "tsx scripts/vibes.ts",
+    "vibes:ab": "tsx scripts/vibes.ts",
+    "profiles:list": "tsx scripts/profiles-list.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

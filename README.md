@@ -51,6 +51,27 @@ Then register the public URL with your manager or client:
 /public 1
 ```
 
+## Profile Development
+
+Profiles live under `profiles/<slug>/`. A profile can include `agent.md`, `soul.md`, optional `system-prompt.md`, optional `sources.json`, and optional `tests.json`. See [`profiles/_README.md`](profiles/_README.md).
+
+Run a local profile chat:
+
+```bash
+pnpm dev:profiles slowlava
+```
+
+Open `http://localhost:4200/profiles/chat`. The page sends messages directly to local Juno's `/talk` endpoint. Edits to `agent.md`, `soul.md`, `system-prompt.md`, or `sources.json` reset active sessions and show a reload banner in the page.
+
+Run vibes evals:
+
+```bash
+pnpm vibes slowlava
+pnpm vibes slowlava slowlava-baseline
+```
+
+Reports are written to `profiles/<slug>/journal/<timestamp>.md`. The profile model is `OPENROUTER_MODEL` (`google/gemini-2.5-flash` in the local examples), with temperature omitted to match `/talk`. The judge model defaults to `JUNO_VIBES_JUDGE_MODEL=anthropic/claude-3-haiku`.
+
 ## Docs
 
 - [`docs/deployment.md`](docs/deployment.md) — systemd + Caddy on Hetzner

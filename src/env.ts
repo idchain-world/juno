@@ -56,6 +56,12 @@ export interface Env {
   requestDeadlineMs: number;
   /** When true, /talk returns 503. /health and /.well-known stay up. */
   maintenance: boolean;
+  /** Optional active profile slug under JUNO_PROFILES_DIR. */
+  profileSlug: string | null;
+  /** Root directory containing profile bundles. */
+  profilesDir: string;
+  /** OpenRouter model used by pnpm vibes for LLM-as-judge scoring. */
+  judgeModel: string;
   /** Path to identity.json on disk (delivered by manager via SSH). */
   identityPath: string;
   /** When true, startup boot timestamp for /health uptime calculations. */
@@ -198,6 +204,9 @@ export function loadEnv(): Env {
     maxRetryAfterMs: intOr('MAX_RETRY_AFTER_MS', process.env.MAX_RETRY_AFTER_MS, 10000),
     requestDeadlineMs: intOr('REQUEST_DEADLINE_MS', process.env.REQUEST_DEADLINE_MS, 60000),
     maintenance: process.env.MAINTENANCE === 'true',
+    profileSlug: process.env.JUNO_PROFILE_SLUG?.trim() || process.env.PUBLIC_AGENT_PROFILE_SLUG?.trim() || null,
+    profilesDir: process.env.JUNO_PROFILES_DIR?.trim() || path.resolve(process.cwd(), 'profiles'),
+    judgeModel: process.env.JUNO_VIBES_JUDGE_MODEL?.trim() || 'anthropic/claude-3-haiku',
     identityPath: process.env.IDENTITY_PATH?.trim() || '/opt/public-agent/identity.json',
     bootTimeMs: Date.now(),
   };

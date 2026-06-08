@@ -32,6 +32,8 @@ export interface SessionStore {
   append(id: string, role: ChatMessage['role'], content: string): void;
   getSessionContext(id: string, key: string): SessionContext | null | undefined;
   setSessionContext(id: string, key: string, value: SessionContext | null): void;
+  clearSessionContextCache(): void;
+  resetAll(): number;
   has(sessionId: string): boolean;
   all(): Session[];
   purgeIdle(now?: number): number;
@@ -172,6 +174,26 @@ export function createSessionStore(env: Env): SessionStore {
       s.sessionContextCache = { key, value };
       s.lastAccessedAt = Date.now();
       writeSession(env, s);
+    },
+    clearSessionContextCache() {
+      for (const s of sessions.values()) {
+        if (!s.sessionContextCache) continue;
+        delete s.sessionContextCache;
+        s.lastAccessedAt = Date.now();
+        writeSession(env, s);
+      }
+    },
+    resetAll() {
+      const count = sessions.size;
+      for (const id of Array.from(sessions.keys())) {
+        sessions.delete(id);
+        try {
+          fs.unlinkSync(sessionPath(env, id));
+        } catch {
+          // already gone
+        }
+      }
+      return count;
     },
     has(sessionId) {
       purgeIdle();

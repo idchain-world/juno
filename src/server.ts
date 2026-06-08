@@ -1,4 +1,5 @@
 import { serve } from '@hono/node-server';
+import fs from 'node:fs';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { loadEnv } from './env.js';
@@ -13,6 +14,8 @@ import { identityRoutes } from './routes/identity.js';
 import { loadManifest, type KnowledgeManifest } from './lib/knowledge.js';
 import { purgeOldArtifacts } from './lib/tool-truncate.js';
 import { createSessionStore } from './lib/sessions.js';
+import { profileDir, watchedProfileFile } from './lib/profiles.js';
+import { profileDevRoutes } from './routes/profile-dev.js';
 
 const env = loadEnv();
 
@@ -58,6 +61,38 @@ const oversize = (maxSize: number) =>
 // conversations. Default idle TTL is 24h (SESSION_IDLE_MINUTES).
 const sessions = createSessionStore(env);
 
+let profileReloadVersion = 0;
+const profileReloadListeners = new Set<(version: number) => void>();
+const profileReloadHub = {
+  version: () => profileReloadVersion,
+  subscribe(listener: (version: number) => void) {
+    profileReloadListeners.add(listener);
+    return () => profileReloadListeners.delete(listener);
+  },
+};
+
+if (env.profileSlug) {
+  const dir = profileDir(env, env.profileSlug);
+  fs.mkdirSync(dir, { recursive: true });
+  let reloadTimer: NodeJS.Timeout | null = null;
+  fs.watch(dir, (eventType, filename) => {
+    if (!filename || !watchedProfileFile(filename.toString())) return;
+    if (eventType !== 'change' && eventType !== 'rename') return;
+    if (reloadTimer) clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      sessions.clearSessionContextCache();
+      const resetCount = sessions.resetAll();
+      profileReloadVersion += 1;
+      for (const listener of profileReloadListeners) listener(profileReloadVersion);
+      console.log(
+        `[public-agent] profile reloaded slug=${env.profileSlug} version=${profileReloadVersion} reset_sessions=${resetCount}`,
+      );
+    }, 100);
+  });
+  console.log(`[public-agent] watching profile ${env.profileSlug} at ${dir}`);
+}
+
 // ── Public listener: internet-reachable surfaces ──
 // /talk  — sync chat, rate-limited. Public by default (PROTECT_TALK to gate).
 // /news  — session-scoped; read/write your own news by session_id only.
@@ -73,6 +108,7 @@ publicApp.route('/', identityRoutes(env));
 publicApp.route('/', talkRoutes(env, knowledge, sessions));
 publicApp.route('/', publicNewsRoutes(env, sessions));
 publicApp.route('/', mcpRoutes(env));
+if (env.profileSlug) publicApp.route('/', profileDevRoutes(env, profileReloadHub));
 publicApp.all('*', (c) => c.json({ error: 'not_found', path: c.req.path }, 404));
 
 // ── Operator listener: loopback-only surfaces (/inbox, /news, /mcp) ──
