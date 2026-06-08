@@ -7,9 +7,25 @@ Profiles live in `profiles/<slug>/` and define voice, identity, optional source 
 - `agent.md`: primary identity, speaking style, and profile rules.
 - `soul.md`: lore, background, and persistent self-knowledge.
 - `system-prompt.md`: optional replacement for Juno's generic style prose. Runtime capability, tool-discovery, and safety rules always remain active.
+- `metadata.json`: optional NFT display metadata for the local `/profiles/chat` page. Missing fields are skipped gracefully.
 - `sources.json`: optional extra static context. Use either an array of paths, or `{ "sources": [{ "key": "name", "path": "file.md" }] }`. Paths must stay inside the profile directory.
 - `tests.json`: optional canonical vibes prompts. If absent, `profiles/_default-tests.json` is used.
 - `journal/`: generated markdown eval reports from `pnpm vibes`.
+
+## metadata.json
+
+All fields are optional. `image` may be an HTTPS URL or a local relative path resolved from the profile directory.
+
+```json
+{
+  "name": "Slowlava #199",
+  "chainId": 1,
+  "tokenContract": "0xeeb036dbbd3039429c430657ed9836568da79d5f",
+  "tokenId": "9274",
+  "image": "https://api.cc0mon.com/cc0mon/9274/image.png",
+  "openseaUrl": "https://opensea.io/assets/ethereum/0xeeb036dbbd3039429c430657ed9836568da79d5f/9274"
+}
+```
 
 ## Local Commands
 

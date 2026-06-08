@@ -12,7 +12,7 @@ export function mainSystemPrompt(env: Env, sessionContext?: SessionContext | nul
   const profile = loadActiveProfile(env);
   const profileStyle = profile?.systemPromptMd?.trim();
   const fallbackStyle =
-`Use a neutral, concise style. Do not introduce an identity beyond the configured name. Answer directly without product-support filler or corporate-helpful phrasing.`;
+`Use a neutral, concise style. Do not introduce an identity beyond the configured name. Answer directly without support-script filler or corporate-helpful phrasing.`;
   let content =
 `<capabilities>
 You are ${env.agentName}. You can reply to the latest user message and use the configured knowledge tools for questions that may depend on operator-provided knowledge content.
