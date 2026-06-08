@@ -107,8 +107,18 @@ function chatHtml(slug: string, model: string, judgeModel: string, metadata: Pro
     .turn { max-width: 78%; padding: 10px 12px; border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 8px; line-height: 1.4; white-space: pre-wrap; }
     .user { align-self: flex-end; background: color-mix(in srgb, CanvasText 8%, Canvas); }
     .agent { align-self: flex-start; }
+    .pending { min-width: 44px; display: inline-flex; gap: 5px; align-items: center; white-space: normal; }
+    .dot { width: 7px; height: 7px; border-radius: 999px; background: color-mix(in srgb, CanvasText 58%, transparent); animation: pulse 1s ease-in-out infinite; }
+    .dot:nth-child(2) { animation-delay: 0.14s; }
+    .dot:nth-child(3) { animation-delay: 0.28s; }
+    .error { border-color: color-mix(in srgb, #dc2626 55%, transparent); background: color-mix(in srgb, #dc2626 10%, Canvas); color: #b91c1c; }
+    @keyframes pulse {
+      0%, 80%, 100% { opacity: 0.35; transform: translateY(0); }
+      40% { opacity: 1; transform: translateY(-2px); }
+    }
     form { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 14px 18px 18px; border-top: 1px solid color-mix(in srgb, CanvasText 16%, transparent); }
     textarea { resize: vertical; min-height: 44px; max-height: 160px; padding: 10px 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); font: inherit; background: Canvas; color: CanvasText; }
+    textarea:disabled { opacity: 0.65; cursor: progress; }
     button { min-width: 88px; border: 0; border-radius: 8px; background: #1f2937; color: white; font: inherit; font-weight: 650; cursor: pointer; }
     button:disabled { opacity: 0.55; cursor: progress; }
   </style>
@@ -140,6 +150,40 @@ function chatHtml(slug: string, model: string, judgeModel: string, metadata: Pro
       div.textContent = text;
       log.appendChild(div);
       log.scrollTop = log.scrollHeight;
+      return div;
+    }
+
+    function addPendingTurn() {
+      const div = document.createElement('div');
+      div.className = 'turn agent pending';
+      div.setAttribute('aria-label', 'Waiting for reply');
+      div.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+      return div;
+    }
+
+    function replaceTurn(div, kind, text) {
+      div.className = 'turn ' + kind;
+      div.removeAttribute('aria-label');
+      div.textContent = text;
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function setSending(sending) {
+      message.disabled = sending;
+      send.disabled = sending;
+      send.textContent = sending ? 'Sending...' : 'Send';
+    }
+
+    async function readTalkBody(response) {
+      const text = await response.text();
+      if (!text) return {};
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error(response.ok ? 'invalid JSON response' : text.slice(0, 180));
+      }
     }
 
     const events = new EventSource('/profiles/events');
@@ -155,21 +199,23 @@ function chatHtml(slug: string, model: string, judgeModel: string, metadata: Pro
       if (!text) return;
       message.value = '';
       addTurn('user', text);
-      send.disabled = true;
+      const pendingTurn = addPendingTurn();
+      setSending(true);
       try {
         const response = await fetch('/talk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message: text, from: 'profile-dev-ui', ...(sessionId ? { session_id: sessionId } : {}) })
         });
-        const body = await response.json();
+        const body = await readTalkBody(response);
         if (!response.ok) throw new Error(body.detail || body.error || 'request failed');
+        if (body.error) throw new Error(body.detail || body.error);
         sessionId = body.session_id || sessionId;
-        addTurn('agent', body.reply || '');
+        replaceTurn(pendingTurn, 'agent', body.reply || '');
       } catch (err) {
-        addTurn('agent', 'Error: ' + err.message);
+        replaceTurn(pendingTurn, 'agent error', "Couldn't reach Slowlava: " + (err?.message || 'request failed'));
       } finally {
-        send.disabled = false;
+        setSending(false);
         message.focus();
       }
     });
