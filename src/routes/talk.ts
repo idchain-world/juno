@@ -85,7 +85,7 @@ function projectContext(env: Env, context: KnowledgeRequestContext): ProjectCont
   return { context: merged, tokenId };
 }
 
-function sessionContextCacheKey(project: ProjectContext): string {
+function sessionContextCacheKey(project: ProjectContext, studioOverride?: string | null): string {
   const identity: Record<string, unknown> = {};
   for (const key of ['projectId', 'projectSlug', 'tenantSlug', 'chainId', 'tokenContract', 'tokenId']) {
     const value = project.context[key];
@@ -94,6 +94,9 @@ function sessionContextCacheKey(project: ProjectContext): string {
     }
   }
   identity.tokenId = project.tokenId;
+  if (studioOverride === 'drafts') {
+    identity.studioOverride = 'drafts';
+  }
   return JSON.stringify(identity);
 }
 
@@ -102,11 +105,16 @@ async function sessionContextForTurn(
   sessions: SessionStore,
   session: Session,
   project: ProjectContext,
+  studioOverride?: string | null,
 ): Promise<SessionContext | null> {
-  const key = sessionContextCacheKey(project);
+  if (studioOverride === 'drafts') {
+    return fetchSessionContext(env, project, studioOverride);
+  }
+
+  const key = sessionContextCacheKey(project, studioOverride);
   const cached = sessions.getSessionContext(session.id, key);
   if (cached !== undefined) return cached;
-  const value = await fetchSessionContext(env, project);
+  const value = await fetchSessionContext(env, project, studioOverride);
   sessions.setSessionContext(session.id, key, value);
   return value;
 }
@@ -475,6 +483,7 @@ export function talkRoutes(
   }, limiter, async (c) => {
     // F-03: capture wall-clock start for per-request deadline.
     const requestStart = Date.now();
+    const studioOverride = c.req.header('x-dappa-studio-override') ?? null;
 
     const ip = resolve(c) ?? '';
     const budget = isOverBudget(env);
@@ -603,7 +612,7 @@ export function talkRoutes(
     // on top of Juno's base prompt and is never persisted or guard-classified.
     const requestContext = (body.context ?? {}) as KnowledgeRequestContext;
     const project = projectContext(env, requestContext);
-    const sessionContext = await sessionContextForTurn(env, sessions, session, project);
+    const sessionContext = await sessionContextForTurn(env, sessions, session, project, studioOverride);
     const requestSystemPrompt = perRequestSystemPrompt(body.system);
     const outgoingMessages: ChatMessage[] = [
       mainSystemPrompt(env, sessionContext),

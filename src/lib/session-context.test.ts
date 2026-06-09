@@ -54,6 +54,51 @@ describe('fetchSessionContext', () => {
     });
   });
 
+  it('does not forward studio override header when absent', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ sources: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchSessionContext(env(), { context: { tokenId: '7' }, tokenId: '7' });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.headers).not.toMatchObject({ 'x-dappa-studio-override': expect.any(String) });
+  });
+
+  it('forwards studio override header when override is drafts', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ sources: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchSessionContext(env(), { context: { tokenId: '7' }, tokenId: '7' }, 'drafts');
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.headers).toMatchObject({ 'x-dappa-studio-override': 'drafts' });
+  });
+
+  it('does not forward studio override header for non-drafts values', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ sources: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchSessionContext(env(), { context: { tokenId: '7' }, tokenId: '7' }, 'published');
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.headers).not.toMatchObject({ 'x-dappa-studio-override': expect.any(String) });
+  });
+
   it('returns null on malformed response shape', async () => {
     vi.stubGlobal(
       'fetch',

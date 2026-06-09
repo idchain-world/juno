@@ -25,6 +25,7 @@ let loggedMissingEndpoint = false;
 export async function fetchSessionContext(
   env: Env,
   project: ProjectContext,
+  studioOverride?: string | null,
 ): Promise<SessionContext | null> {
   const endpoint = sessionContextEndpoint(env);
   if (!endpoint) return null;
@@ -32,14 +33,19 @@ export async function fetchSessionContext(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), env.mcpTimeoutMs);
   try {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      authorization: `Bearer ${env.mcpServiceToken}`,
+      ...mcpContextHeaders(project.context),
+    };
+    if (studioOverride === 'drafts') {
+      headers['x-dappa-studio-override'] = 'drafts';
+    }
+
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json',
-        authorization: `Bearer ${env.mcpServiceToken}`,
-        ...mcpContextHeaders(project.context),
-      },
+      headers,
       body: JSON.stringify({ context: project.context, tokenId: project.tokenId }),
       signal: controller.signal,
     });

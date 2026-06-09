@@ -32,12 +32,14 @@ function makeTalkHarness(envOverrides = {}) {
 function mockOpenRouter(
   calls: unknown[],
   sessionContextResponse?: { status: number; body?: unknown },
+  sessionContextCalls: Array<{ url: string; init?: RequestInit }> = [],
 ) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const href = String(url);
       if (href.includes('/api/internal/juno/session-context')) {
+        sessionContextCalls.push({ url: href, init });
         if (!sessionContextResponse) return new Response('not found', { status: 404 });
         return new Response(
           sessionContextResponse.body === undefined ? null : JSON.stringify(sessionContextResponse.body),
@@ -252,6 +254,76 @@ describe('/talk per-request system prompt', () => {
         String(url).includes('/api/internal/juno/session-context'),
       );
       expect(sessionContextCalls).toHaveLength(1);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('forwards the drafts studio override header to session-context fetch', async () => {
+    const calls: unknown[] = [];
+    const sessionContextCalls: Array<{ url: string; init?: RequestInit }> = [];
+    const { app, root } = makeTalkHarness({
+      mcpEndpointUrl: 'https://dappa.example/api/internal/juno/mcp',
+      mcpServiceToken: 'service-token',
+    });
+    mockOpenRouter(
+      calls,
+      { status: 200, body: { sources: [{ key: 'persona', content: 'Draft context.' }] } },
+      sessionContextCalls,
+    );
+
+    try {
+      const res = await req(app, 'POST', '/talk', {
+        headers: {
+          'x-forwarded-for': '203.0.113.10',
+          'x-dappa-studio-override': 'drafts',
+        },
+        body: { message: 'hello', context: { tokenId: '7' } },
+      });
+
+      expect(res.status).toBe(200);
+      expect(sessionContextCalls).toHaveLength(1);
+      expect(sessionContextCalls[0]?.init?.headers).toMatchObject({
+        'x-dappa-studio-override': 'drafts',
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not cache drafts studio session-context between turns', async () => {
+    const calls: unknown[] = [];
+    const sessionContextCalls: Array<{ url: string; init?: RequestInit }> = [];
+    const { app, root } = makeTalkHarness({
+      mcpEndpointUrl: 'https://dappa.example/api/internal/juno/mcp',
+      mcpServiceToken: 'service-token',
+    });
+    mockOpenRouter(
+      calls,
+      { status: 200, body: { sources: [{ key: 'persona', content: 'Draft context.' }] } },
+      sessionContextCalls,
+    );
+
+    try {
+      const first = await req(app, 'POST', '/talk', {
+        headers: {
+          'x-forwarded-for': '203.0.113.10',
+          'x-dappa-studio-override': 'drafts',
+        },
+        body: { message: 'first', context: { tokenId: '7' } },
+      });
+      const firstBody = first.body as { session_id: string };
+      const second = await req(app, 'POST', '/talk', {
+        headers: {
+          'x-forwarded-for': '203.0.113.10',
+          'x-dappa-studio-override': 'drafts',
+        },
+        body: { message: 'second', session_id: firstBody.session_id, context: { tokenId: '7' } },
+      });
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(sessionContextCalls).toHaveLength(2);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
