@@ -130,7 +130,7 @@ describe('/talk per-request system prompt', () => {
     expect(res.status).toBe(200);
     const messages = mainCall(calls).messages;
     expect(messages[0]?.role).toBe('system');
-    expect(messages[0]?.content).toContain('You are test-agent');
+    expect(messages[0]?.content).toContain('You are a character in a chat with a person. Stay in character.');
     expect(messages[1]).toEqual({
       role: 'system',
       content: 'Answer as the tenant-specific concierge.',
@@ -264,7 +264,7 @@ describe('/talk per-request system prompt', () => {
     }
   });
 
-  it('injects session-context content into the main system prompt when fetch succeeds', async () => {
+  it('uses non-persona session-context as a tools signal when fetch succeeds', async () => {
     const calls: unknown[] = [];
     const { app, root } = makeTalkHarness({
       mcpEndpointUrl: 'https://dappa.example/api/internal/juno/mcp',
@@ -284,9 +284,10 @@ describe('/talk per-request system prompt', () => {
 
       expect(res.status).toBe(200);
       const content = mainCall(calls).messages[0]?.content ?? '';
-      expect(content).toContain('## Session context');
-      expect(content).toContain('### persona');
-      expect(content).toContain('You know the Normies canon.');
+      expect(content).toContain('<tools>');
+      expect(content).not.toContain('## Session context');
+      expect(content).not.toContain('### persona');
+      expect(content).not.toContain('You know the Normies canon.');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
