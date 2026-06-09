@@ -33,6 +33,28 @@ afterEach(() => {
 });
 
 describe('mainSystemPrompt persona-first assembly', () => {
+  it('anchors capabilities and runtime identity to the persona when persona sources are present', () => {
+    const env = makeEnv({ agentName: '8dc744b8e32c672501bec9d00f6b2a7a' });
+    const { content } = mainSystemPrompt(env, sc([{ key: 'agentmd', content: 'AGENT VOICE' }]));
+
+    const capabilities = content.slice(content.indexOf('<capabilities>'), content.indexOf('</capabilities>'));
+    const definitions = content.slice(content.indexOf('<definitions>'), content.indexOf('</definitions>'));
+    expect(capabilities).toContain('You are the character described in the <persona> block below. You can reply');
+    expect(capabilities).not.toContain(env.agentName);
+    expect(definitions).toContain('- runtime: the character described in the <persona> block (you).');
+    expect(definitions).not.toContain(env.agentName);
+  });
+
+  it('keeps capabilities and runtime identity on env.agentName when no persona is present', () => {
+    const env = makeEnv({ agentName: 'test-worker' });
+    const { content } = mainSystemPrompt(env);
+
+    const capabilities = content.slice(content.indexOf('<capabilities>'), content.indexOf('</capabilities>'));
+    const definitions = content.slice(content.indexOf('<definitions>'), content.indexOf('</definitions>'));
+    expect(capabilities).toContain('You are test-worker. You can reply');
+    expect(definitions).toContain('- runtime: test-worker (you).');
+  });
+
   it('renders persona block and replaces style when session-context has agentmd + soulmd', () => {
     const { content } = mainSystemPrompt(
       makeEnv(),

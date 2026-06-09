@@ -9,7 +9,7 @@ import { clientIp, tokenBucket } from '../lib/rate-limit.js';
 import { isOverBudget, reserveTokens, reconcileTokens } from '../lib/budget.js';
 import type { Session, SessionStore } from '../lib/sessions.js';
 import { classifyMessage, type GuardVerdict } from '../lib/guard.js';
-import { REFUSAL_REPLY, UNDER_REVIEW_REPLY, mainSystemPrompt } from '../lib/prompts.js';
+import { REFUSAL_REPLY, mainSystemPrompt } from '../lib/prompts.js';
 import {
   KNOWLEDGE_MAX_TOOL_CALLS_PER_REQUEST,
   KNOWLEDGE_MAX_TOOL_OUTPUT_BYTES,
@@ -570,11 +570,14 @@ export function talkRoutes(
     sessions.append(session.id, 'user', message);
     const inboxId = makeInboxId();
 
-    // Short-circuit on refuse/review: return a canned reply without running
-    // the main LLM. The user turn is still counted toward the session cap
-    // and the interaction is logged for review.
-    if (verdict.classification === 'refuse' || verdict.classification === 'review') {
-      const reply = verdict.classification === 'refuse' ? REFUSAL_REPLY : UNDER_REVIEW_REPLY;
+    // Short-circuit on refuse only: return the canned refusal without running
+    // the main LLM. A `review` verdict is NOT short-circuited — it continues
+    // into the main LLM tool-call loop exactly as `allow` does, while its
+    // classification is still preserved in the audit trail (inbox + response
+    // guard metadata). The user turn is counted toward the session cap and the
+    // interaction is logged.
+    if (verdict.classification === 'refuse') {
+      const reply = REFUSAL_REPLY;
       sessions.append(session.id, 'assistant', reply);
       writeGuardedInbox(env, {
         id: inboxId,
@@ -587,7 +590,7 @@ export function talkRoutes(
         session,
         verdict,
         guardModel,
-        priority: verdict.classification === 'review' ? 'review' : 'normal',
+        priority: 'normal',
       });
       return c.json({
         reply,
@@ -732,7 +735,9 @@ export function talkRoutes(
       session,
       verdict,
       guardModel,
-      priority: 'normal',
+      // A `review` verdict still ran the main LLM, but stays flagged for human
+      // review in the audit trail; `allow` is normal priority.
+      priority: verdict.classification === 'review' ? 'review' : 'normal',
       toolLogs,
       retrievalTrace,
     });
