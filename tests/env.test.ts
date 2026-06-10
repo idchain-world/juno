@@ -12,19 +12,22 @@ describe('loadEnv', () => {
     vi.stubEnv('PUBLIC_URL', 'https://agent.example.com');
   }
 
-  it('defaults guardEnabled to true when JUNO_GUARD_ENABLED is unset', () => {
+  it('defaults guardEnabled to false when JUNO_GUARD_ENABLED is unset', () => {
     stubRequiredEnv();
     vi.stubEnv('JUNO_GUARD_ENABLED', undefined);
 
-    expect(loadEnv().guardEnabled).toBe(true);
+    expect(loadEnv().guardEnabled).toBe(false);
   });
 
-  it('disables the guard only for literal false', () => {
+  it('enables the guard only for literal true', () => {
     stubRequiredEnv();
-    vi.stubEnv('JUNO_GUARD_ENABLED', 'false');
+    vi.stubEnv('JUNO_GUARD_ENABLED', 'true');
+    expect(loadEnv().guardEnabled).toBe(true);
+
+    vi.stubEnv('JUNO_GUARD_ENABLED', 'TRUE');
     expect(loadEnv().guardEnabled).toBe(false);
 
-    vi.stubEnv('JUNO_GUARD_ENABLED', 'FALSE');
-    expect(loadEnv().guardEnabled).toBe(true);
+    vi.stubEnv('JUNO_GUARD_ENABLED', 'false');
+    expect(loadEnv().guardEnabled).toBe(false);
   });
 });
