@@ -26,11 +26,17 @@ export interface InboxEntry {
   archived_at?: string;
   session_id?: string | null;  // server-minted; groups turns of one conversation
   guard?: {
+    // `classified` = the classifier ran and produced this verdict;
+    // `disabled` = guard turned off (JUNO_GUARD_ENABLED=false), treated as allow;
+    // `error_failed_open` = classifier errored, treated as allow. The latter two carry
+    // a synthetic allow verdict and a null model so audits can tell them apart
+    // from a genuine classified allow.
+    status: 'classified' | 'disabled' | 'error_failed_open';
     classification: 'allow' | 'refuse' | 'review';
     violation_type: string;
     cwe_codes: string[];
     reasoning: string;
-    model: string;
+    model: string | null;
   };
   priority?: 'normal' | 'review';
   tool_calls?: Array<{

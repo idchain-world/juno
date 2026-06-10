@@ -124,24 +124,35 @@ async function runGuardOrFail(
   message: string,
 ): Promise<
   | { ok: true; verdict: GuardVerdict; usage: { prompt: number; completion: number; total: number }; model: string }
-  | { ok: false; response: { status: number; body: Record<string, unknown> } }
+  | { ok: false; verdict: GuardVerdict; usage: { prompt: number; completion: number; total: number }; model: null }
 > {
   try {
     const result = await classifyMessage(env, message);
     return { ok: true, verdict: result.verdict, usage: result.usage, model: result.model };
   } catch (err) {
-    console.error('[public-agent] /talk guard failed (fail-closed):', err);
+    console.error('[public-agent] /talk guard failed (fail-open):', err);
     return {
       ok: false,
-      response: {
-        status: 503,
-        body: {
-          error: 'guard_unavailable',
-          detail: 'Safety classifier unavailable; request refused.',
-        },
-      },
+      verdict: allowVerdict('Guard classifier failed; request allowed fail-open.'),
+      usage: zeroUsage(),
+      model: null,
     };
   }
+}
+
+type GuardAuditStatus = 'classified' | 'disabled' | 'error_failed_open';
+
+function zeroUsage(): { prompt: number; completion: number; total: number } {
+  return { prompt: 0, completion: 0, total: 0 };
+}
+
+function allowVerdict(reasoning: string): GuardVerdict {
+  return {
+    classification: 'allow',
+    violation_type: 'none',
+    cwe_codes: [],
+    reasoning,
+  };
 }
 
 function writeGuardedInbox(
@@ -156,7 +167,8 @@ function writeGuardedInbox(
     usage: { prompt: number; completion: number; total: number };
     session: Session;
     verdict: GuardVerdict;
-    guardModel: string;
+    guardModel: string | null;
+    guardStatus: GuardAuditStatus;
     priority: 'normal' | 'review';
     toolLogs?: ToolCallLog[];
     retrievalTrace?: RetrievalCycleTrace[];
@@ -174,6 +186,7 @@ function writeGuardedInbox(
     status: 'unread',
     session_id: params.session.id,
     guard: {
+      status: params.guardStatus,
       classification: params.verdict.classification,
       violation_type: params.verdict.violation_type,
       cwe_codes: params.verdict.cwe_codes,
@@ -541,28 +554,29 @@ export function talkRoutes(
       return c.json({ error: 'request_deadline_exceeded' }, 503, { 'Retry-After': '5' });
     }
 
-    // Reserve tokens for the classifier call first. Fail closed if the
-    // reservation bookkeeping itself fails (disk error etc.).
-    const guardCap = Math.max(0, env.maxGuardTokens);
+    const guardCap = env.guardEnabled ? Math.max(0, env.maxGuardTokens) : 0;
     if (guardCap > 0) {
       try {
         reserveTokens(env, guardCap);
       } catch (err) {
         console.error('[public-agent] /talk guard reserve failed:', err);
-        return c.json({ error: 'budget_error', detail: 'Budget bookkeeping failed.' }, 503);
       }
     }
 
-    const guardOutcome = await runGuardOrFail(env, message);
-    if (!guardOutcome.ok) {
-      if (guardCap > 0) {
-        try { reconcileTokens(env, guardCap, 0); } catch (e) { console.error('[public-agent] guard budget reconcile failed:', e); }
-      }
-      return c.json(guardOutcome.response.body, guardOutcome.response.status as 503);
-    }
+    const guardOutcome = env.guardEnabled
+      ? await runGuardOrFail(env, message)
+      : {
+          ok: false as const,
+          verdict: allowVerdict('Guard disabled by JUNO_GUARD_ENABLED=false.'),
+          usage: zeroUsage(),
+          model: null,
+        };
     const verdict = guardOutcome.verdict;
     const guardUsage = guardOutcome.usage;
     const guardModel = guardOutcome.model;
+    const guardStatus: GuardAuditStatus = env.guardEnabled
+      ? guardOutcome.ok ? 'classified' : 'error_failed_open'
+      : 'disabled';
     if (guardCap > 0) {
       try { reconcileTokens(env, guardCap, guardUsage.total); } catch (e) { console.error('[public-agent] guard budget reconcile failed:', e); }
     }
@@ -585,22 +599,25 @@ export function talkRoutes(
         from,
         message,
         reply,
-        model: guardModel,
+        model: guardModel ?? 'none',
         usage: guardUsage,
         session,
         verdict,
         guardModel,
+        guardStatus,
         priority: 'normal',
       });
       return c.json({
         reply,
-        model: guardModel,
+        model: guardModel ?? 'none',
         inbox_id: inboxId,
         tokens_used: guardUsage,
         session_id: session.id,
         guard: {
+          status: guardStatus,
           classification: verdict.classification,
           violation_type: verdict.violation_type,
+          model: guardModel,
         },
       });
     }
@@ -735,6 +752,7 @@ export function talkRoutes(
       session,
       verdict,
       guardModel,
+      guardStatus,
       // A `review` verdict still ran the main LLM, but stays flagged for human
       // review in the audit trail; `allow` is normal priority.
       priority: verdict.classification === 'review' ? 'review' : 'normal',
@@ -749,8 +767,10 @@ export function talkRoutes(
       tokens_used: combinedUsage,
       session_id: session.id,
       guard: {
+        status: guardStatus,
         classification: verdict.classification,
         violation_type: verdict.violation_type,
+        model: guardModel,
       },
       tool_calls_used: toolLogs.length,
     });

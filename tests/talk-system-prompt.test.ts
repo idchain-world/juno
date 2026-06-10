@@ -34,7 +34,7 @@ function mockOpenRouter(
   calls: unknown[],
   sessionContextResponse?: { status: number; body?: unknown },
   sessionContextCalls: Array<{ url: string; init?: RequestInit }> = [],
-  guardClassification: 'allow' | 'refuse' | 'review' = 'allow',
+  guardClassification: 'allow' | 'refuse' | 'review' | 'throw' = 'allow',
 ) {
   vi.stubGlobal(
     'fetch',
@@ -56,6 +56,9 @@ function mockOpenRouter(
       calls.push(body);
 
       if (body.response_format) {
+        if (guardClassification === 'throw') {
+          throw new Error('guard unavailable');
+        }
         const violationType = guardClassification === 'allow' ? 'none' : 'jailbreak';
         return new Response(
           JSON.stringify({
@@ -193,7 +196,7 @@ describe('/talk per-request system prompt', () => {
       expect(res.body).toMatchObject({
         reply: REFUSAL_REPLY,
         model: 'guard-test-model',
-        guard: { classification: 'refuse', violation_type: 'jailbreak' },
+        guard: { status: 'classified', classification: 'refuse', violation_type: 'jailbreak', model: 'guard-test-model' },
       });
       expect(calls).toHaveLength(1);
       expect(guardCall(calls)).toBeDefined();
@@ -201,6 +204,7 @@ describe('/talk per-request system prompt', () => {
       const [entry] = listInbox(env, 'all');
       expect(entry?.reply).toBe(REFUSAL_REPLY);
       expect(entry?.guard?.classification).toBe('refuse');
+      expect(entry?.guard?.status).toBe('classified');
       expect(entry?.priority).toBe('normal');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -222,7 +226,7 @@ describe('/talk per-request system prompt', () => {
       expect(res.body).toMatchObject({
         reply: 'ok',
         model: 'main-test-model',
-        guard: { classification: 'review', violation_type: 'jailbreak' },
+        guard: { status: 'classified', classification: 'review', violation_type: 'jailbreak', model: 'guard-test-model' },
       });
       expect(guardCall(calls)).toBeDefined();
       expect(mainCall(calls)).toBeDefined();
@@ -230,6 +234,7 @@ describe('/talk per-request system prompt', () => {
       expect(entry?.reply).toBe('ok');
       expect(entry?.model).toBe('main-test-model');
       expect(entry?.guard?.classification).toBe('review');
+      expect(entry?.guard?.status).toBe('classified');
       expect(entry?.priority).toBe('review');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -251,14 +256,71 @@ describe('/talk per-request system prompt', () => {
       expect(res.body).toMatchObject({
         reply: 'ok',
         model: 'main-test-model',
-        guard: { classification: 'allow', violation_type: 'none' },
+        guard: { status: 'classified', classification: 'allow', violation_type: 'none', model: 'guard-test-model' },
       });
       expect(guardCall(calls)).toBeDefined();
       expect(mainCall(calls)).toBeDefined();
       const [entry] = listInbox(env, 'all');
       expect(entry?.reply).toBe('ok');
       expect(entry?.guard?.classification).toBe('allow');
+      expect(entry?.guard?.status).toBe('classified');
       expect(entry?.priority).toBe('normal');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('skips the guard entirely when disabled and marks the audit metadata', async () => {
+    const calls: unknown[] = [];
+    const { app, env, root } = makeTalkHarness({ guardEnabled: false });
+    mockOpenRouter(calls);
+
+    try {
+      const res = await req(app, 'POST', '/talk', {
+        headers: { 'x-forwarded-for': '203.0.113.10' },
+        body: { message: 'hello without guard' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        reply: 'ok',
+        model: 'main-test-model',
+        guard: { status: 'disabled', classification: 'allow', violation_type: 'none', model: null },
+      });
+      expect(guardCall(calls)).toBeUndefined();
+      expect(mainCall(calls)).toBeDefined();
+      const [entry] = listInbox(env, 'all');
+      expect(entry?.guard?.status).toBe('disabled');
+      expect(entry?.guard?.classification).toBe('allow');
+      expect(entry?.guard?.model).toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails open when the guard classifier throws and marks the audit metadata', async () => {
+    const calls: unknown[] = [];
+    const { app, env, root } = makeTalkHarness();
+    mockOpenRouter(calls, undefined, [], 'throw');
+
+    try {
+      const res = await req(app, 'POST', '/talk', {
+        headers: { 'x-forwarded-for': '203.0.113.10' },
+        body: { message: 'guard throws but chat proceeds' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        reply: 'ok',
+        model: 'main-test-model',
+        guard: { status: 'error_failed_open', classification: 'allow', violation_type: 'none', model: null },
+      });
+      expect(guardCall(calls)).toBeDefined();
+      expect(mainCall(calls)).toBeDefined();
+      const [entry] = listInbox(env, 'all');
+      expect(entry?.guard?.status).toBe('error_failed_open');
+      expect(entry?.guard?.classification).toBe('allow');
+      expect(entry?.guard?.model).toBeNull();
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

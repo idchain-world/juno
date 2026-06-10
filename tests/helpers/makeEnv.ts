@@ -27,6 +27,7 @@ export function makeEnv(overrides: Partial<Env> = {}): Env {
     maxTurnsPerSession: 50,
     guardModel: 'test-model',
     maxGuardTokens: 256,
+    guardEnabled: true,
     maxMessageChars: 8000,
     knowledgeDir: '/tmp/test-knowledge',
     knowledgeProvider: 'local',

@@ -64,7 +64,7 @@ export interface GuardCallResult {
 }
 
 // Runs the classifier. Throws on any error (network, non-2xx, empty reply,
-// unparseable JSON, schema violation) — the caller must fail CLOSED.
+// unparseable JSON, schema violation) — the /talk caller fails open.
 export async function classifyMessage(env: Env, text: string): Promise<GuardCallResult> {
   const messages = [guardSystemPrompt(env), guardUserMessage(text)];
   const raw = await openRouterRawCall(env, messages, {

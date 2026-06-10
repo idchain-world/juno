@@ -38,6 +38,7 @@ export interface Env {
   maxTurnsPerSession: number;
   guardModel: string;
   maxGuardTokens: number;
+  guardEnabled: boolean;
   maxMessageChars: number;
   knowledgeDir: string;
   knowledgeProvider: 'local' | 'remote-http' | 'mcp';
@@ -167,6 +168,9 @@ export function loadEnv(): Env {
     maxTurnsPerSession: intOr('MAX_TURNS_PER_SESSION', process.env.MAX_TURNS_PER_SESSION, 50),
     guardModel: process.env.GUARD_MODEL?.trim() || process.env.OPENROUTER_MODEL || required('OPENROUTER_MODEL', process.env.OPENROUTER_MODEL),
     maxGuardTokens: intOr('MAX_GUARD_TOKENS', process.env.MAX_GUARD_TOKENS, 256),
+    // Safety classifier is on by default; set JUNO_GUARD_ENABLED=false to skip
+    // all guard work in /talk and fail open. Any other value (or unset) is true.
+    guardEnabled: process.env.JUNO_GUARD_ENABLED !== 'false',
     maxMessageChars: intOr('MAX_MESSAGE_CHARS', process.env.MAX_MESSAGE_CHARS, 8000),
     knowledgeDir: process.env.PUBLIC_AGENT_KNOWLEDGE_DIR?.trim() || '/app/knowledge',
     knowledgeProvider:
