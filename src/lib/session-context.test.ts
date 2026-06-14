@@ -54,6 +54,58 @@ describe('fetchSessionContext', () => {
     });
   });
 
+  it('sends explicit x-dappa-* identity headers alongside the legacy x-juno-context blob', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ sources: [{ key: 'persona', content: 'Be precise.' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const context = {
+      projectSlug: 'normies',
+      chainId: 1,
+      tokenContract: '0xabc0000000000000000000000000000000000000',
+      tokenId: '7',
+      requestId: 'req-1',
+      workerId: 'worker-1',
+    };
+    await fetchSessionContext(env(), { context, tokenId: '7' });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.headers).toMatchObject({
+      authorization: 'Bearer service-token',
+      // Back-compat: the JSON blob is still sent unchanged.
+      'x-juno-context': JSON.stringify(context),
+      // New: each identity field is also an explicit, individually-named header.
+      'x-dappa-project-slug': 'normies',
+      'x-dappa-chain-id': '1',
+      'x-dappa-token-contract': '0xabc0000000000000000000000000000000000000',
+      'x-dappa-token-id': '7',
+      'x-dappa-request-id': 'req-1',
+      'x-dappa-juno-worker-id': 'worker-1',
+    });
+  });
+
+  it('omits x-dappa-* headers for identity fields that are absent', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ sources: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchSessionContext(env(), { context: { tokenId: '7' }, tokenId: '7' });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers['x-dappa-token-id']).toBe('7');
+    expect(headers['x-dappa-project-slug']).toBeUndefined();
+    expect(headers['x-dappa-chain-id']).toBeUndefined();
+  });
+
   it('does not forward studio override header when absent', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ sources: [] }), {

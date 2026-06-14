@@ -582,6 +582,20 @@ export function mergeKnowledgeContext(...contexts: Array<Record<string, unknown>
 // the `tools/call` JSON-RPC body, which has no size limit.
 const MCP_CONTEXT_HEADER_MAX_VALUE = 1024;
 
+// Identity fields the Dappa server reads as explicit, individually-named
+// headers (see dappa-app `parseJunoMcpContext`). We emit these ALONGSIDE the
+// legacy `x-juno-context` JSON blob so the server no longer has to parse a JSON
+// header and no identity field is silently lost if the blob is dropped or
+// truncated by a proxy. `x-juno-context` is retained for backward compatibility.
+const DAPPA_CONTEXT_HEADERS: ReadonlyArray<readonly [string, string]> = [
+  ['projectSlug', 'x-dappa-project-slug'],
+  ['chainId', 'x-dappa-chain-id'],
+  ['tokenContract', 'x-dappa-token-contract'],
+  ['tokenId', 'x-dappa-token-id'],
+  ['requestId', 'x-dappa-request-id'],
+  ['workerId', 'x-dappa-juno-worker-id'],
+];
+
 export function mcpContextHeaders(context: Record<string, unknown>): Record<string, string> {
   const scoped: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(context)) {
@@ -596,9 +610,18 @@ export function mcpContextHeaders(context: Record<string, unknown>): Record<stri
     // Objects, arrays, null/undefined, and oversized strings are omitted —
     // they belong in the request body, not a header.
   }
-  return Object.keys(scoped).length > 0
-    ? { 'x-juno-context': JSON.stringify(scoped) }
-    : {};
+  if (Object.keys(scoped).length === 0) return {};
+
+  const headers: Record<string, string> = { 'x-juno-context': JSON.stringify(scoped) };
+  for (const [key, headerName] of DAPPA_CONTEXT_HEADERS) {
+    const value = scoped[key];
+    if (typeof value === 'string' && value.length > 0) {
+      headers[headerName] = value;
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+      headers[headerName] = String(value);
+    }
+  }
+  return headers;
 }
 
 function toOpenRouterToolDefinition(tool: unknown): ToolDefinition[] {
