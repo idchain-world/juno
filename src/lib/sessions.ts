@@ -30,6 +30,14 @@ export interface Session {
 export interface SessionStore {
   getOrCreate(sessionId?: string | null): { session: Session; created: boolean };
   append(id: string, role: ChatMessage['role'], content: string): void;
+  /**
+   * Thread an inbound news item into the shared conversation memory. News and
+   * talk are two inbound channels onto the SAME session: a news item becomes
+   * part of the conversation the model sees on subsequent /talk turns, in
+   * arrival order. Unlike a /talk turn it does NOT count toward the session
+   * turn cap (news is fire-and-forget), but it IS persisted and threaded.
+   */
+  threadNews(id: string, from: string, message: string): void;
   getSessionContext(id: string, key: string): SessionContext | null | undefined;
   setSessionContext(id: string, key: string, value: SessionContext | null): void;
   clearSessionContextCache(): void;
@@ -43,6 +51,17 @@ export interface SessionStore {
 
 function newSessionId(): string {
   return crypto.randomUUID();
+}
+
+/**
+ * Render a news item as a conversation message. Because news and talk share one
+ * session memory, a news item enters that memory as an inbound message from its
+ * sender, explicitly marked no-reply/no-processing so the model treats it as
+ * received context/fact rather than a question to answer retroactively.
+ */
+export function formatInboundNews(from: string, message: string): string {
+  const sender = from.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim() || 'unknown';
+  return `[news notification from ${sender}; no-reply; no-processing]\n${message}`;
 }
 
 function sessionsDir(env: Env): string {
@@ -161,6 +180,16 @@ export function createSessionStore(env: Env): SessionStore {
       s.messages.push({ role, content });
       s.lastAccessedAt = Date.now();
       if (role === 'user') s.turnCount += 1;
+      writeSession(env, s);
+    },
+    threadNews(id, from, message) {
+      const s = sessions.get(id);
+      if (!s) return;
+      // Inbound news joins the shared conversation as a no-reply notification.
+      // Intentionally does NOT bump turnCount — news must not consume the
+      // caller's /talk turn budget.
+      s.messages.push({ role: 'user', content: formatInboundNews(from, message) });
+      s.lastAccessedAt = Date.now();
       writeSession(env, s);
     },
     getSessionContext(id, key) {

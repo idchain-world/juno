@@ -46,6 +46,11 @@ export function publicNewsRoutes(env: Env, sessions: SessionStore): Hono {
     }
     const type = typeof body.type === 'string' && body.type.trim() ? body.type.trim() : 'notify';
     const item = appendNews(env, { type, from, message, data: body.data, session_id: sessionId });
+    // News and talk share ONE session memory: thread the item into the
+    // conversation so the agent is aware of it on subsequent /talk turns. The
+    // news log (read back by get_news) is unchanged; this is the model-facing
+    // copy. The session is known to exist (sessions.has check above).
+    sessions.threadNews(sessionId, from, message);
     return c.json({ ok: true, id: item.id, timestamp: item.timestamp });
   });
 
