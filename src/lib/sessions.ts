@@ -56,12 +56,12 @@ function newSessionId(): string {
 /**
  * Render a news item as a conversation message. Because news and talk share one
  * session memory, a news item enters that memory as an inbound message from its
- * sender, explicitly marked no-reply/no-processing so the model treats it as
- * received context/fact rather than a question to answer retroactively.
+ * sender, explicitly marked informational-only so the model treats it as
+ * received context/fact rather than a question to answer.
  */
 export function formatInboundNews(from: string, message: string): string {
   const sender = from.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim() || 'unknown';
-  return `[news notification from ${sender}; no-reply; no-processing]\n${message}`;
+  return `[NEWS - informational only. Do NOT reply to this. This is context for you to consume and remember.] From: ${sender}\n${message}`;
 }
 
 function sessionsDir(env: Env): string {
@@ -185,7 +185,7 @@ export function createSessionStore(env: Env): SessionStore {
     threadNews(id, from, message) {
       const s = sessions.get(id);
       if (!s) return;
-      // Inbound news joins the shared conversation as a no-reply notification.
+      // Inbound news joins the shared conversation as consume-only context.
       // Intentionally does NOT bump turnCount — news must not consume the
       // caller's /talk turn budget.
       s.messages.push({ role: 'user', content: formatInboundNews(from, message) });

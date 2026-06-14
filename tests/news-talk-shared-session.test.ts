@@ -102,14 +102,14 @@ describe('news -> talk shared session', () => {
       expect(second.status).toBe(200);
 
       // The model messages for the SECOND turn must contain the news item,
-      // labeled as a no-reply notification, ahead of the new user question.
+      // labeled as consume-only context, ahead of the new user question.
       const secondMain = mainCalls(calls).at(-1)!;
       const newsMsg = secondMain.messages.find((m) => m.content.includes('chartreuse'));
       expect(newsMsg, 'news item should be threaded into talk context').toBeDefined();
       expect(newsMsg!.role).toBe('user');
-      expect(newsMsg!.content).toContain('no-reply');
-      expect(newsMsg!.content).toContain('no-processing');
-      expect(newsMsg!.content).toContain('owner');
+      expect(newsMsg!.content).toBe(
+        '[NEWS - informational only. Do NOT reply to this. This is context for you to consume and remember.] From: owner\nMy favorite color is chartreuse',
+      );
 
       // Ordering: the threaded news precedes the current user question.
       const newsIdx = secondMain.messages.findIndex((m) => m.content.includes('chartreuse'));
