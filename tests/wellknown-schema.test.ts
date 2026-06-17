@@ -9,7 +9,7 @@
  *   - endpoints.talk: string
  *   - public_url: valid absolute URL
  *
- * Plus the design Section 3 fields the CLI and manager expect.
+ * Plus the RESTAP discovery fields and legacy fields older clients expect.
  */
 import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
@@ -50,12 +50,55 @@ describe('well-known schema matches CLI/manager contract', () => {
     expect(endpoints.identity).toBe('/identity');
   });
 
-  it('capabilities array contains talk, news, mcp, search_knowledge, read_knowledge', async () => {
+  it('capabilities array declares RESTAP talk and news endpoints', async () => {
     const env = makeEnv();
     const app = new Hono().route('/', wellknownRoutes(env));
     const res = await req(app, 'GET', '/.well-known/restap.json');
     const body = res.body as Record<string, unknown>;
-    expect(body.capabilities).toEqual(['talk', 'news', 'mcp', 'search_knowledge', 'read_knowledge']);
+    const capabilities = body.capabilities as Array<Record<string, unknown>>;
+    expect(capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'talk',
+          method: 'POST',
+          endpoint: '/talk',
+          output_formats: ['application/json', 'text/event-stream'],
+          streaming: expect.objectContaining({
+            supported: true,
+            transport: 'sse',
+            events: ['message.start', 'message.delta', 'message.end', 'error', 'done'],
+          }),
+          sessions: { supported: true },
+        }),
+        expect.objectContaining({
+          id: 'news',
+          method: 'GET',
+          endpoint: '/news',
+        }),
+        expect.objectContaining({
+          id: 'news_receive',
+          method: 'POST',
+          endpoint: '/news',
+        }),
+      ]),
+    );
+    expect(body.legacy_capabilities).toEqual(['talk', 'news', 'mcp', 'search_knowledge', 'read_knowledge']);
+  });
+
+  it('includes RESTAP agent, protocols, and package metadata', async () => {
+    const env = makeEnv({ agentName: 'friendly-bot' });
+    const app = new Hono().route('/', wellknownRoutes(env));
+    const res = await req(app, 'GET', '/.well-known/restap.json');
+    const body = res.body as Record<string, unknown>;
+    expect(body.restap_version).toBe('0.1.1-beta');
+    expect(body.agent).toMatchObject({ name: 'friendly-bot' });
+    expect(body.protocols).toMatchObject({
+      restap: { available: true, endpoint: '/' },
+      mcp: { available: true, endpoint: '/mcp' },
+    });
+    expect(body.packages).toEqual([
+      expect.objectContaining({ type: 'claude-skill', skill_file: '/.well-known/skill.md' }),
+    ]);
   });
 
   it('auth object declares talk=none, operator=ssh-tunnel', async () => {

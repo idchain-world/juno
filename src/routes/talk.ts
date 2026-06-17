@@ -61,10 +61,55 @@ function buildTalkSchema(env: Env) {
 
 type TalkInput = z.infer<ReturnType<typeof buildTalkSchema>>;
 
+type TalkResponseBody = {
+  reply: string;
+  model: string;
+  inbox_id: string;
+  tokens_used: { prompt: number; completion: number; total: number };
+  session_id: string;
+  guard: {
+    status: GuardAuditStatus;
+    classification: GuardVerdict['classification'];
+    violation_type: GuardVerdict['violation_type'];
+    model: string | null;
+  };
+  tool_calls_used?: number;
+};
+
 function sanitizeFrom(from: string | undefined): string | null {
   if (typeof from !== 'string') return null;
   const trimmed = from.trim();
   return trimmed ? trimmed.slice(0, 120) : null;
+}
+
+function wantsSse(c: Context): boolean {
+  const accept = c.req.header('accept') ?? '';
+  return accept
+    .split(',')
+    .map((part) => part.split(';', 1)[0]?.trim().toLowerCase())
+    .includes('text/event-stream');
+}
+
+function sseFrame(event: string, payload: Record<string, unknown>): string {
+  return `event: ${event}\ndata: ${JSON.stringify({ event, ...payload })}\n\n`;
+}
+
+function talkResponse(c: Context, body: TalkResponseBody) {
+  if (!wantsSse(c)) return c.json(body);
+
+  const id = body.inbox_id;
+  const stream =
+    sseFrame('message.start', { id, session_id: body.session_id }) +
+    sseFrame('message.delta', { id, text: body.reply }) +
+    sseFrame('message.end', { id }) +
+    sseFrame('done', { session_id: body.session_id });
+
+  return c.body(stream, 200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
 }
 
 function perRequestSystemPrompt(system: string | undefined): ChatMessage | null {
@@ -607,7 +652,7 @@ export function talkRoutes(
         guardStatus,
         priority: 'normal',
       });
-      return c.json({
+      return talkResponse(c, {
         reply,
         model: guardModel ?? 'none',
         inbox_id: inboxId,
@@ -760,7 +805,7 @@ export function talkRoutes(
       retrievalTrace,
     });
 
-    return c.json({
+    return talkResponse(c, {
       reply,
       model,
       inbox_id: inboxId,

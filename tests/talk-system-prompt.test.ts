@@ -270,6 +270,32 @@ describe('/talk per-request system prompt', () => {
     }
   });
 
+  it('streams RESTAP SSE frames when requested', async () => {
+    const { app, root } = makeTalkHarness();
+    const calls: unknown[] = [];
+    mockOpenRouter(calls);
+    try {
+      const res = await req(app, 'POST', '/talk', {
+        headers: {
+          accept: 'text/event-stream',
+          'x-forwarded-for': '203.0.113.10',
+        },
+        body: { message: 'hello' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toContain('text/event-stream');
+      expect(res.text).toContain('event: message.start');
+      expect(res.text).toContain('event: message.delta');
+      expect(res.text).toContain('"text":"ok"');
+      expect(res.text).toContain('event: message.end');
+      expect(res.text).toContain('event: done');
+      expect(res.text).toContain('"session_id"');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('skips the guard entirely when disabled and marks the audit metadata', async () => {
     const calls: unknown[] = [];
     const { app, env, root } = makeTalkHarness({ guardEnabled: false });
