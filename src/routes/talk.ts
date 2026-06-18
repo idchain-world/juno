@@ -55,6 +55,18 @@ function buildTalkSchema(env: Env) {
       context: z
         .record(z.string().min(1).max(120), z.unknown())
         .optional(),
+      // Optional caller-provided conversation history for session memory.
+      // Only user/assistant turns, in chronological order. The caller is
+      // responsible for capping length; Juno tolerates an omitted or empty
+      // array, in which case behavior is unchanged.
+      history: z
+        .array(
+          z.object({
+            role: z.enum(['user', 'assistant']),
+            content: z.string().min(1).max(env.maxMessageChars),
+          }),
+        )
+        .optional(),
     })
     .strict();
 }
@@ -116,6 +128,22 @@ function perRequestSystemPrompt(system: string | undefined): ChatMessage | null 
   if (typeof system !== 'string') return null;
   const trimmed = system.trim();
   return trimmed ? { role: 'system', content: trimmed } : null;
+}
+
+// Caller-supplied history is prepended to the LLM messages before the new
+// user turn, preserving chronological order. Trim content and drop
+// empty/whitespace-only turns; roles are already constrained to
+// user/assistant by the schema. This history is ephemeral request context:
+// it is never persisted to the session and never sent to the guard classifier.
+function sanitizeHistory(history: TalkInput['history']): ChatMessage[] {
+  if (!history || history.length === 0) return [];
+  const out: ChatMessage[] = [];
+  for (const turn of history) {
+    const content = turn.content.trim();
+    if (!content) continue;
+    out.push({ role: turn.role, content });
+  }
+  return out;
 }
 
 function projectContext(env: Env, context: KnowledgeRequestContext): ProjectContext {
@@ -679,9 +707,11 @@ export function talkRoutes(
     const project = projectContext(env, requestContext);
     const sessionContext = await sessionContextForTurn(env, sessions, session, project, studioOverride);
     const requestSystemPrompt = perRequestSystemPrompt(body.system);
+    const historyMessages = sanitizeHistory(body.history);
     const outgoingMessages: ChatMessage[] = [
       mainSystemPrompt(env, sessionContext),
       ...(requestSystemPrompt ? [requestSystemPrompt] : []),
+      ...historyMessages,
       ...session.messages,
     ];
     let knowledgeProvider: KnowledgeProvider;
