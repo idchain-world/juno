@@ -81,6 +81,25 @@ function mockOpenRouter(
         );
       }
 
+      if (body.stream === true) {
+        const frames = [
+          { model: 'main-test-model', choices: [{ delta: { content: 'o' } }] },
+          { model: 'main-test-model', choices: [{ delta: { content: 'k' } }] },
+          {
+            model: 'main-test-model',
+            choices: [{ delta: {}, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 7, completion_tokens: 1, total_tokens: 8 },
+          },
+        ];
+        const text =
+          frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('') +
+          'data: [DONE]\n\n';
+        return new Response(text, {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }
+
       return new Response(
         JSON.stringify({
           choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
@@ -115,6 +134,7 @@ function guardCall(calls: unknown[]) {
 function mainCall(calls: unknown[]) {
   return calls.find((call) => !Boolean((call as { response_format?: unknown }).response_format)) as {
     messages: Array<{ role: string; content: string }>;
+    stream?: boolean;
   };
 }
 
@@ -287,10 +307,39 @@ describe('/talk per-request system prompt', () => {
       expect(res.headers.get('content-type')).toContain('text/event-stream');
       expect(res.text).toContain('event: message.start');
       expect(res.text).toContain('event: message.delta');
-      expect(res.text).toContain('"text":"ok"');
+      const deltas = res.text.match(/event: message\.delta/g) ?? [];
+      expect(deltas).toHaveLength(2);
+      expect(res.text).toContain('"text":"o"');
+      expect(res.text).toContain('"text":"k"');
       expect(res.text).toContain('event: message.end');
       expect(res.text).toContain('event: done');
       expect(res.text).toContain('"session_id"');
+      expect(mainCall(calls).stream).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('streams RESTAP SSE frames when body.stream is true without an Accept header', async () => {
+    const { app, root } = makeTalkHarness();
+    const calls: unknown[] = [];
+    mockOpenRouter(calls);
+    try {
+      const res = await req(app, 'POST', '/talk', {
+        headers: {
+          'x-forwarded-for': '203.0.113.10',
+        },
+        body: { message: 'hello', stream: true },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toContain('text/event-stream');
+      expect(res.text).toContain('event: message.start');
+      expect(res.text).toContain('event: message.end');
+      expect(res.text).toContain('event: done');
+      expect(res.text).toContain('"text":"o"');
+      expect(res.text).toContain('"text":"k"');
+      expect(mainCall(calls).stream).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

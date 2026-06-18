@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { z } from 'zod';
 import type { Env } from '../env.js';
-import { openRouterRawCall, UpstreamError, type ChatMessage, type RawAssistantMessage } from '../lib/openrouter.js';
+import { openRouterRawCall, openRouterRawStream, UpstreamError, type ChatMessage, type RawAssistantMessage } from '../lib/openrouter.js';
 import { writeInboxEntry, makeInboxId, type InboxEntry } from '../lib/inbox.js';
 import { requireAuthOrPublicTalk } from '../lib/auth.js';
 import { clientIp, tokenBucket } from '../lib/rate-limit.js';
@@ -67,6 +67,7 @@ function buildTalkSchema(env: Env) {
           }),
         )
         .optional(),
+      stream: z.boolean().optional(),
     })
     .strict();
 }
@@ -103,24 +104,54 @@ function wantsSse(c: Context): boolean {
 }
 
 function sseFrame(event: string, payload: Record<string, unknown>): string {
-  return `event: ${event}\ndata: ${JSON.stringify({ event, ...payload })}\n\n`;
+  return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
 }
 
-function talkResponse(c: Context, body: TalkResponseBody) {
-  if (!wantsSse(c)) return c.json(body);
+function talkResponse(c: Context, body: TalkResponseBody, forceSse = false) {
+  if (!forceSse && !wantsSse(c)) return c.json(body);
 
   const id = body.inbox_id;
   const stream =
     sseFrame('message.start', { id, session_id: body.session_id }) +
     sseFrame('message.delta', { id, text: body.reply }) +
-    sseFrame('message.end', { id }) +
-    sseFrame('done', { session_id: body.session_id });
+    sseFrame('message.end', { id, session_id: body.session_id }) +
+    sseFrame('done', {});
 
   return c.body(stream, 200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
     'X-Accel-Buffering': 'no',
+  });
+}
+
+function talkStreamResponse(
+  run: (send: (event: string, payload: Record<string, unknown>) => void) => Promise<void>,
+) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const send = (event: string, payload: Record<string, unknown>) => {
+        controller.enqueue(encoder.encode(sseFrame(event, payload)));
+      };
+      run(send)
+        .catch((err) => {
+          console.error('[public-agent] /talk stream error:', err);
+          send('error', { error: 'upstream_error', detail: 'upstream request failed' });
+          send('done', {});
+        })
+        .finally(() => controller.close());
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
   });
 }
 
@@ -313,6 +344,7 @@ async function runToolLoop(
   knowledge: KnowledgeProvider,
   baseMessages: ChatMessage[],
   replyCap: number,
+  onDelta?: (text: string) => void,
 ): Promise<{
   reply: string;
   model: string;
@@ -331,11 +363,14 @@ async function runToolLoop(
   // Loop: ask the model, execute tool calls if any, re-ask. Bail when the
   // model returns a plain content message or we exhaust the call budget.
   while (true) {
-    const raw: RawAssistantMessage = await openRouterRawCall(env, messages, {
+    const callOptions = {
       maxTokens: replyCap > 0 ? replyCap : undefined,
       tools: toolDefinitions,
-      toolChoice: 'auto',
-    });
+      toolChoice: 'auto' as const,
+    };
+    const raw: RawAssistantMessage = onDelta
+      ? await openRouterRawStream(env, messages, callOptions, (delta) => onDelta(delta.text))
+      : await openRouterRawCall(env, messages, callOptions);
     model = raw.model;
     combinedUsage = {
       prompt: combinedUsage.prompt + raw.usage.prompt,
@@ -418,6 +453,7 @@ async function runPersistenceLoop(
   replyCap: number,
   userMessage: string,
   requestStart: number = 0,
+  onDelta?: (text: string) => void,
 ): Promise<{
   reply: string;
   model: string;
@@ -459,7 +495,7 @@ async function runPersistenceLoop(
     }
 
     state.cycles = cycle;
-    const result = await runToolLoop(env, knowledge, messages, replyCap);
+    const result = await runToolLoop(env, knowledge, messages, replyCap, onDelta);
     reply = result.reply;
     model = result.model;
     combinedUsage = {
@@ -599,6 +635,7 @@ export function talkRoutes(
       );
     }
     const body: TalkInput = parsed.data;
+    const streamRequested = body.stream === true || wantsSse(c);
 
     const message = body.message.trim();
     if (!message) {
@@ -680,19 +717,23 @@ export function talkRoutes(
         guardStatus,
         priority: 'normal',
       });
-      return talkResponse(c, {
-        reply,
-        model: guardModel ?? 'none',
-        inbox_id: inboxId,
-        tokens_used: guardUsage,
-        session_id: session.id,
-        guard: {
-          status: guardStatus,
-          classification: verdict.classification,
-          violation_type: verdict.violation_type,
-          model: guardModel,
+      return talkResponse(
+        c,
+        {
+          reply,
+          model: guardModel ?? 'none',
+          inbox_id: inboxId,
+          tokens_used: guardUsage,
+          session_id: session.id,
+          guard: {
+            status: guardStatus,
+            classification: verdict.classification,
+            violation_type: verdict.violation_type,
+            model: guardModel,
+          },
         },
-      });
+        streamRequested,
+      );
     }
 
     // F-03: check deadline before main LLM call.
@@ -759,6 +800,88 @@ export function talkRoutes(
       } catch (err) {
         console.error('[public-agent] /talk reply reserve failed:', err);
       }
+    }
+
+    if (streamRequested) {
+      return talkStreamResponse(async (send) => {
+        send('message.start', { id: inboxId, session_id: session.id });
+
+        let reply: string;
+        let model: string;
+        let usage: { prompt: number; completion: number; total: number };
+        let toolLogs: ToolCallLog[] = [];
+        let retrievalTrace: RetrievalCycleTrace[] = [];
+        try {
+          const result = await runPersistenceLoop(
+            env,
+            knowledgeProvider,
+            outgoingMessages,
+            cap,
+            message,
+            requestStart,
+            (text) => send('message.delta', { id: inboxId, text }),
+          );
+          reply = result.reply;
+          model = result.model;
+          usage = result.usage;
+          toolLogs = result.toolLogs;
+          retrievalTrace = result.trace;
+        } catch (err) {
+          if (reserved > 0) {
+            try { reconcileTokens(env, reserved, 0); } catch (e) { console.error('[public-agent] reply budget reconcile (err) failed:', e); }
+          }
+          console.error('[public-agent] /talk openrouter stream error:', err);
+          send('error', { id: inboxId, error: 'upstream_error', detail: 'upstream request failed' });
+          send('done', {});
+          return;
+        }
+
+        if (reserved > 0) {
+          try { reconcileTokens(env, reserved, usage.total); } catch (e) { console.error('[public-agent] reply budget reconcile failed:', e); }
+        }
+
+        for (const log of toolLogs) {
+          console.log(
+            `[public-agent] /talk tool_call session=${session.id} name=${log.name} ok=${log.ok} ` +
+              `result_count=${log.result_count} bytes=${log.bytes} duration_ms=${log.duration_ms}` +
+              (log.truncated ? ` truncated=true artifact=${log.artifact ?? 'unavailable'}` : '') +
+              (log.error ? ` error="${log.error}"` : ''),
+          );
+        }
+        for (const row of retrievalTrace) {
+          console.log(
+            `[public-agent] /talk retrieval_cycle session=${session.id} cycle=${row.cycle} ` +
+              `query_count=${row.query_count} unique_roots=${row.unique_roots} ` +
+              `docs_inspected=${row.docs_inspected} hits=${row.searches_with_hits} nudged=${row.nudged}`,
+          );
+        }
+
+        sessions.append(session.id, 'assistant', reply);
+        const combinedUsage = {
+          prompt: guardUsage.prompt + usage.prompt,
+          completion: guardUsage.completion + usage.completion,
+          total: guardUsage.total + usage.total,
+        };
+        writeGuardedInbox(env, {
+          id: inboxId,
+          ip,
+          from,
+          message,
+          reply,
+          model,
+          usage: combinedUsage,
+          session,
+          verdict,
+          guardModel,
+          guardStatus,
+          priority: verdict.classification === 'review' ? 'review' : 'normal',
+          toolLogs,
+          retrievalTrace,
+        });
+
+        send('message.end', { id: inboxId, session_id: session.id });
+        send('done', {});
+      });
     }
 
     let reply: string;
