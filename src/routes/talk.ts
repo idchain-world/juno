@@ -37,10 +37,12 @@ import {
   type RetrievalCycleTrace,
 } from '../lib/retrieval-loop.js';
 
-// The server-minted session_id is a UUID v4. Clients echo it back verbatim.
-// Reject anything that isn't shaped like one so a garbage id can't cause
-// weird lookups downstream.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// RESTAP 0.1.3 Sessions: a client-supplied session_id must match
+// ^[A-Za-z0-9._-]{16,128}$. The server still mints a UUID v4 when session_id
+// is absent (a minted UUID v4 satisfies this pattern, so clients echo it back
+// verbatim). Format is validated in the handler so a malformed value returns
+// a specific `invalid_session_id` error rather than a generic `invalid_body`.
+const SESSION_ID_RE = /^[A-Za-z0-9._-]{16,128}$/;
 
 function buildTalkSchema(env: Env) {
   return z
@@ -48,10 +50,9 @@ function buildTalkSchema(env: Env) {
       message: z.string().min(1).max(env.maxMessageChars),
       from: z.string().max(120).optional(),
       system: z.string().min(1).max(env.maxMessageChars).optional(),
-      session_id: z
-        .string()
-        .regex(UUID_RE, 'session_id must be a UUID v4')
-        .optional(),
+      // Accept any string here; the RESTAP session_id format is validated in
+      // the handler so a bad value returns `invalid_session_id`, not `invalid_body`.
+      session_id: z.string().optional(),
       context: z
         .record(z.string().min(1).max(120), z.unknown())
         .optional(),
@@ -115,7 +116,7 @@ function talkResponse(c: Context, body: TalkResponseBody, forceSse = false) {
     sseFrame('message.start', { id, session_id: body.session_id }) +
     sseFrame('message.delta', { id, text: body.reply }) +
     sseFrame('message.end', { id, session_id: body.session_id }) +
-    sseFrame('done', {});
+    sseFrame('done', { session_id: body.session_id });
 
   return c.body(stream, 200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
@@ -644,6 +645,12 @@ export function talkRoutes(
 
     const from = sanitizeFrom(body.from);
     const requestedSessionId = body.session_id ?? null;
+    // RESTAP 0.1.3: reject a malformed client session_id before any JSON/SSE
+    // branching, so JSON and streaming requests behave identically. Never echo
+    // the offending value back.
+    if (requestedSessionId !== null && !SESSION_ID_RE.test(requestedSessionId)) {
+      return c.json({ error: 'invalid_session_id' }, 400);
+    }
 
     const { session } = sessions.getOrCreate(requestedSessionId);
 
@@ -832,7 +839,7 @@ export function talkRoutes(
           }
           console.error('[public-agent] /talk openrouter stream error:', err);
           send('error', { id: inboxId, error: 'upstream_error', detail: 'upstream request failed' });
-          send('done', {});
+          send('done', { session_id: session.id });
           return;
         }
 
@@ -842,7 +849,7 @@ export function talkRoutes(
 
         for (const log of toolLogs) {
           console.log(
-            `[public-agent] /talk tool_call session=${session.id} name=${log.name} ok=${log.ok} ` +
+            `[public-agent] /talk tool_call name=${log.name} ok=${log.ok} ` +
               `result_count=${log.result_count} bytes=${log.bytes} duration_ms=${log.duration_ms}` +
               (log.truncated ? ` truncated=true artifact=${log.artifact ?? 'unavailable'}` : '') +
               (log.error ? ` error="${log.error}"` : ''),
@@ -850,7 +857,7 @@ export function talkRoutes(
         }
         for (const row of retrievalTrace) {
           console.log(
-            `[public-agent] /talk retrieval_cycle session=${session.id} cycle=${row.cycle} ` +
+            `[public-agent] /talk retrieval_cycle cycle=${row.cycle} ` +
               `query_count=${row.query_count} unique_roots=${row.unique_roots} ` +
               `docs_inspected=${row.docs_inspected} hits=${row.searches_with_hits} nudged=${row.nudged}`,
           );
@@ -880,7 +887,7 @@ export function talkRoutes(
         });
 
         send('message.end', { id: inboxId, session_id: session.id });
-        send('done', {});
+        send('done', { session_id: session.id });
       });
     }
 
@@ -919,7 +926,7 @@ export function talkRoutes(
 
     for (const log of toolLogs) {
       console.log(
-        `[public-agent] /talk tool_call session=${session.id} name=${log.name} ok=${log.ok} ` +
+        `[public-agent] /talk tool_call name=${log.name} ok=${log.ok} ` +
           `result_count=${log.result_count} bytes=${log.bytes} duration_ms=${log.duration_ms}` +
           (log.truncated ? ` truncated=true artifact=${log.artifact ?? 'unavailable'}` : '') +
           (log.error ? ` error="${log.error}"` : ''),
@@ -927,7 +934,7 @@ export function talkRoutes(
     }
     for (const row of retrievalTrace) {
       console.log(
-        `[public-agent] /talk retrieval_cycle session=${session.id} cycle=${row.cycle} ` +
+        `[public-agent] /talk retrieval_cycle cycle=${row.cycle} ` +
           `query_count=${row.query_count} unique_roots=${row.unique_roots} ` +
           `docs_inspected=${row.docs_inspected} hits=${row.searches_with_hits} nudged=${row.nudged}`,
       );
