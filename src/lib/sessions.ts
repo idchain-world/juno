@@ -70,8 +70,12 @@ function sessionsDir(env: Env): string {
 
 function sessionPath(env: Env, id: string): string {
   // Validate id shape so we can't be tricked into escaping the sessions dir.
-  if (!/^[a-f0-9-]{36}$/i.test(id)) {
-    throw new Error(`invalid session id shape: ${id}`);
+  // Accepts RESTAP 0.1.3 session ids (^[A-Za-z0-9._-]{16,128}$); a minted
+  // UUID v4 also matches. The character class excludes path separators, so an
+  // id can never escape the sessions directory. Do not include the id value in
+  // the error (session_id must not be logged).
+  if (!/^[A-Za-z0-9._-]{16,128}$/.test(id)) {
+    throw new Error('invalid session id shape');
   }
   return path.join(sessionsDir(env), `${id}.json`);
 }
@@ -162,7 +166,10 @@ export function createSessionStore(env: Env): SessionStore {
         }
       }
       evictOldest();
-      const id = newSessionId();
+      // RESTAP 0.1.3: a supplied (already format-validated by the route)
+      // session_id IS the session key. Mint a UUID v4 only when the client
+      // omitted session_id.
+      const id = sessionId || newSessionId();
       const session: Session = {
         id,
         messages: [],

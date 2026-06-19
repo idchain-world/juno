@@ -125,7 +125,7 @@ describe('/talk RESTAP 0.1.3 session_id conformance', () => {
     }
   });
 
-  it('accepts a valid non-UUID session_id (request proceeds, not rejected)', async () => {
+  it('adopts a supplied valid non-UUID session_id as the session key (echoes it back)', async () => {
     const { app, root } = makeTalkHarness();
     mockOpenRouter();
     try {
@@ -134,27 +134,31 @@ describe('/talk RESTAP 0.1.3 session_id conformance', () => {
         headers: IP,
         body: { message: 'hi', session_id: sid },
       });
-      // Valid format must NOT be rejected. (Whether a brand-new id is adopted or
-      // a fresh session is minted is sessions-store behavior, out of this slice's
-      // scope; the conformance point here is that a well-formed id is accepted.)
+      // RESTAP 0.1.3: a supplied valid session_id IS the session key — it must
+      // be used as-is, not replaced by a freshly minted UUID.
       expect(res.status).toBe(200);
-      expect((res.body as { session_id?: string }).session_id).toMatch(/^[A-Za-z0-9._-]{16,128}$/);
+      expect((res.body as { session_id: string }).session_id).toBe(sid);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('continues an existing session when its id is supplied on a later turn', async () => {
+  it('persists a client-supplied id across turns (same key continues the session)', async () => {
     const { app, root } = makeTalkHarness();
     mockOpenRouter();
     try {
-      const first = await req(app, 'POST', '/talk', { headers: IP, body: { message: 'first' } });
-      const sid = (first.body as { session_id: string }).session_id;
+      const sid = 'client.chosen-Key_99887766'; // non-UUID, valid
+      const first = await req(app, 'POST', '/talk', {
+        headers: IP,
+        body: { message: 'first', session_id: sid },
+      });
       const second = await req(app, 'POST', '/talk', {
         headers: IP,
         body: { message: 'second', session_id: sid },
       });
+      expect(first.status).toBe(200);
       expect(second.status).toBe(200);
+      expect((first.body as { session_id: string }).session_id).toBe(sid);
       expect((second.body as { session_id: string }).session_id).toBe(sid);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
