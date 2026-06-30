@@ -301,7 +301,9 @@ sed \
   -e "s|__PUBLIC_PORT__|${PUBLIC_PORT}|g" \
   "$SITE_TEMPLATE" > "$SITE_TMP"
 
-if [[ "$DOMAIN" == *.mcp.dappa.ai ]]; then
+# Enable Caddy on-demand TLS when the operator asks for it (JUNO_ONDEMAND_TLS=true),
+# or for the Dappa fleet's *.mcp.dappa.ai wildcard hosts (kept for compatibility).
+if [[ "${JUNO_ONDEMAND_TLS:-}" == "true" || "$DOMAIN" == *.mcp.dappa.ai ]]; then
   awk '
     /^[[:space:]]*[a-z0-9.-]+[[:space:]]*\{$/ && !inserted {
       print

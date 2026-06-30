@@ -153,7 +153,7 @@ describe('/talk per-request system prompt', () => {
     expect(res.status).toBe(200);
     const messages = mainCall(calls).messages;
     expect(messages[0]?.role).toBe('system');
-    expect(messages[0]?.content).toContain('You are a character in a chat with a person. Stay in character.');
+    expect(messages[0]?.content).toContain('You are a helpful AI assistant in a chat with a person.');
     expect(messages[1]).toEqual({
       role: 'system',
       content: 'Answer as the tenant-specific concierge.',

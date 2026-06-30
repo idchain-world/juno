@@ -11,7 +11,7 @@ Internal workers can run coding or automation tools directly, with full shell an
 - **Rate limit + daily budget** — per-IP `/talk` rate limit, `MAX_TOKENS_PER_DAY` ceiling, prompt+completion budget reserve before each call.
 - **Fail-closed operator plane** — `/inbox`, `/news`, `/mcp` require `PUBLIC_AGENT_AUTH_KEY`. Recommended binding: `127.0.0.1` with operator access via SSH tunnel; public `/talk`, `/health`, `/.well-known/*`, `/identity` on the outer interface.
 - **Bounded retrieval loop** — server-side persistence forces deterministic KB query diversity before the model is allowed to say "I don't know."
-- **DMZ-deployable** — systemd unit + Caddy reverse proxy on a Hetzner CX22 in Falkenstein, no Docker required. See [`docs/deployment.md`](docs/deployment.md).
+- **DMZ-deployable** — systemd unit + Caddy reverse proxy on any Ubuntu VPS (a Hetzner CX22 is one example), no Docker required. See [`docs/deployment.md`](docs/deployment.md).
 - **REST-AP discoverable** — publishes `/.well-known/restap.json` for compatible managers and clients.
 
 ## Requirements
@@ -74,7 +74,7 @@ Reports are written to `profiles/<slug>/journal/<timestamp>.md`. The profile mod
 
 ## Docs
 
-- [`docs/deployment.md`](docs/deployment.md) — systemd + Caddy on Hetzner
+- [`docs/deployment.md`](docs/deployment.md) — systemd + Caddy on any Ubuntu VPS
 - [`docs/runbook.md`](docs/runbook.md) — day-2 ops: suspend, key rotation, KB rebuild, incident disable
 - [`SKILL.md`](SKILL.md) — endpoint contract + human overview
 

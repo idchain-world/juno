@@ -312,9 +312,10 @@ function parseTagline(agentMd: string | null): string | undefined {
   for (const line of agentMd.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
-    const match = /^A\s+(.+?)\s+CC0mon\.?$/i.exec(trimmed);
-    if (!match?.[1]) return undefined;
-    return match[1].replace(/\s*,\s*/g, ' · ').trim();
+    // The first descriptive (non-heading) line becomes the tagline, for any
+    // profile theme. Drop a trailing period and render commas as separators.
+    const tagline = trimmed.replace(/\.\s*$/, '').replace(/\s*,\s*/g, ' · ').trim();
+    return tagline || undefined;
   }
   return undefined;
 }

@@ -18,6 +18,8 @@ export interface Env {
   /** Service version — read from package.json at startup. */
   version: string;
   agentName: string;
+  /** Public description advertised in /.well-known. Product-neutral by default. */
+  agentDescription: string;
   authKey: string | null;
   allowPublicUnauthenticated: boolean;
   /**
@@ -51,6 +53,15 @@ export interface Env {
   mcpAllowedOrigin: string | null;
   mcpServiceToken: string | null;
   mcpTimeoutMs: number;
+  /** Path appended to the remote endpoint for session-context fetches. */
+  sessionContextPath: string;
+  /**
+   * Emit the Dappa-specific `x-dappa-*` identity headers to a remote
+   * knowledge/MCP backend (alongside the always-sent neutral `x-juno-context`).
+   * On by default for backward compatibility with the Dappa backend; set
+   * JUNO_DAPPA_COMPAT_HEADERS=false for a clean standalone deployment.
+   */
+  dappaCompatHeaders: boolean;
   requestContext: Record<string, unknown>;
   upstreamDeadlineMs: number;
   maxRetryAfterMs: number;
@@ -155,6 +166,7 @@ export function loadEnv(): Env {
     publicUrl,
     version: readPackageVersion(),
     agentName,
+    agentDescription: process.env.PUBLIC_AGENT_DESCRIPTION?.trim() || 'Public agent runtime powered by Juno.',
     authKey: process.env.PUBLIC_AGENT_AUTH_KEY?.trim() || null,
     allowPublicUnauthenticated: process.env.ALLOW_PUBLIC_UNAUTHENTICATED === 'true',
     protectTalk: process.env.PROTECT_TALK === 'true',
@@ -206,6 +218,8 @@ export function loadEnv(): Env {
         : '') ||
       null,
     mcpTimeoutMs: intOr('JUNO_MCP_TIMEOUT_MS', process.env.JUNO_MCP_TIMEOUT_MS, 3000),
+    sessionContextPath: process.env.JUNO_SESSION_CONTEXT_PATH?.trim() || '/api/internal/juno/session-context',
+    dappaCompatHeaders: process.env.JUNO_DAPPA_COMPAT_HEADERS !== 'false',
     requestContext: parseRequestContext(),
     upstreamDeadlineMs: intOr('UPSTREAM_DEADLINE_MS', process.env.UPSTREAM_DEADLINE_MS, 45000),
     maxRetryAfterMs: intOr('MAX_RETRY_AFTER_MS', process.env.MAX_RETRY_AFTER_MS, 10000),

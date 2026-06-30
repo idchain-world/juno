@@ -606,7 +606,10 @@ export function talkRoutes(
   }, limiter, async (c) => {
     // F-03: capture wall-clock start for per-request deadline.
     const requestStart = Date.now();
-    const studioOverride = c.req.header('x-dappa-studio-override') ?? null;
+    // Optional context-variant override. The neutral `x-juno-context-override`
+    // is preferred; `x-dappa-studio-override` stays accepted for Dappa Studio.
+    const studioOverride =
+      c.req.header('x-juno-context-override') ?? c.req.header('x-dappa-studio-override') ?? null;
 
     const ip = resolve(c) ?? '';
     const budget = isOverBudget(env);

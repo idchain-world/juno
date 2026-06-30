@@ -473,7 +473,7 @@ function createMcpKnowledgeProvider(input: {
 }): KnowledgeProvider {
   const endpoint = validateMcpEndpoint(input.env);
   const requestContext = mergeKnowledgeContext(input.env.requestContext, input.context);
-  const headers = mcpContextHeaders(requestContext);
+  const headers = mcpContextHeaders(requestContext, { dappaCompatHeaders: input.env.dappaCompatHeaders });
   let initialized = false;
   let cachedTools: ToolDefinition[] | null = null;
 
@@ -596,7 +596,10 @@ const DAPPA_CONTEXT_HEADERS: ReadonlyArray<readonly [string, string]> = [
   ['workerId', 'x-dappa-juno-worker-id'],
 ];
 
-export function mcpContextHeaders(context: Record<string, unknown>): Record<string, string> {
+export function mcpContextHeaders(
+  context: Record<string, unknown>,
+  options?: { dappaCompatHeaders?: boolean },
+): Record<string, string> {
   const scoped: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(context)) {
     if (typeof value === 'number' || typeof value === 'boolean') {
@@ -612,13 +615,19 @@ export function mcpContextHeaders(context: Record<string, unknown>): Record<stri
   }
   if (Object.keys(scoped).length === 0) return {};
 
+  // The neutral `x-juno-context` JSON blob always carries the full scoped
+  // context. The individual `x-dappa-*` headers are a backward-compatibility
+  // convenience for the Dappa backend and can be suppressed for a clean
+  // standalone deployment (see env.dappaCompatHeaders).
   const headers: Record<string, string> = { 'x-juno-context': JSON.stringify(scoped) };
-  for (const [key, headerName] of DAPPA_CONTEXT_HEADERS) {
-    const value = scoped[key];
-    if (typeof value === 'string' && value.length > 0) {
-      headers[headerName] = value;
-    } else if (typeof value === 'number' && Number.isFinite(value)) {
-      headers[headerName] = String(value);
+  if (options?.dappaCompatHeaders !== false) {
+    for (const [key, headerName] of DAPPA_CONTEXT_HEADERS) {
+      const value = scoped[key];
+      if (typeof value === 'string' && value.length > 0) {
+        headers[headerName] = value;
+      } else if (typeof value === 'number' && Number.isFinite(value)) {
+        headers[headerName] = String(value);
+      }
     }
   }
   return headers;

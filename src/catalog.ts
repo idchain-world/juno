@@ -5,7 +5,7 @@ export function buildCatalog(env: Env) {
     restap_version: '0.1.1-beta',
     agent: {
       name: env.agentName,
-      description: 'Dappa public agent runtime powered by Juno.',
+      description: env.agentDescription,
     },
     capabilities: [
       {

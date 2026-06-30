@@ -37,7 +37,7 @@ export async function fetchSessionContext(
       'content-type': 'application/json',
       accept: 'application/json',
       authorization: `Bearer ${env.mcpServiceToken}`,
-      ...mcpContextHeaders(project.context),
+      ...mcpContextHeaders(project.context, { dappaCompatHeaders: env.dappaCompatHeaders }),
     };
     if (studioOverride === 'drafts') {
       headers['x-dappa-studio-override'] = 'drafts';
@@ -89,7 +89,7 @@ function sessionContextEndpoint(env: Env): string | null {
 
   try {
     const url = new URL(raw);
-    url.pathname = '/api/internal/juno/session-context';
+    url.pathname = env.sessionContextPath;
     url.search = '';
     url.hash = '';
     return url.toString();
