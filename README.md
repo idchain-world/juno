@@ -1,18 +1,18 @@
 # Juno
 
-**Juno is a public-facing agent runtime.** It is the runtime you use when an agent has to talk to callers outside your trusted environment — a customer's website, a public `/talk` endpoint, or a DMZ.
+**Juno is a public-facing agent runtime.** It is the runtime you use when an agent has to talk to callers outside your trusted environment, a customer's website, a public `/talk` endpoint, or a DMZ.
 
 Internal workers can run coding or automation tools directly, with full shell and filesystem access. That is fine inside a trusted environment and a liability on the open internet. Juno is the locked-down alternative: a Hono-based Node process with a narrow tool surface, a guard classifier on every turn, a daily token budget, per-IP rate limiting, and optional SSH-tunneled operator endpoints.
 
 ## What Juno gives you
 
-- **Narrow capability surface** — the model can only call `search_knowledge` and `read_knowledge`. No shell. No arbitrary file read. No outbound HTTP except OpenRouter.
-- **Guard classifier on every turn** — a separate OpenRouter call with a strict refusal schema (violation codes mapped to CWEs). Fails closed on malformed output.
-- **Rate limit + daily budget** — per-IP `/talk` rate limit, `MAX_TOKENS_PER_DAY` ceiling, prompt+completion budget reserve before each call.
-- **Fail-closed operator plane** — `/inbox`, `/news`, `/mcp` require `PUBLIC_AGENT_AUTH_KEY`. Recommended binding: `127.0.0.1` with operator access via SSH tunnel; public `/talk`, `/health`, `/.well-known/*`, `/identity` on the outer interface.
-- **Bounded retrieval loop** — server-side persistence forces deterministic KB query diversity before the model is allowed to say "I don't know."
-- **DMZ-deployable** — systemd unit + Caddy reverse proxy on any Ubuntu VPS (a Hetzner CX22 is one example), no Docker required. See [`docs/deployment.md`](docs/deployment.md).
-- **REST-AP discoverable** — publishes `/.well-known/restap.json` for compatible managers and clients.
+- **Narrow capability surface**. The model can only call `search_knowledge` and `read_knowledge`. No shell. No arbitrary file read. No outbound HTTP except OpenRouter.
+- **Guard classifier on every turn**. A separate OpenRouter call with a strict refusal schema (violation codes mapped to CWEs). Fails closed on malformed output.
+- **Rate limit + daily budget**. Per-IP `/talk` rate limit, `MAX_TOKENS_PER_DAY` ceiling, prompt+completion budget reserve before each call.
+- **Fail-closed operator plane**. `/inbox`, `/news`, `/mcp` require `PUBLIC_AGENT_AUTH_KEY`. Recommended binding: `127.0.0.1` with operator access via SSH tunnel; public `/talk`, `/health`, `/.well-known/*`, `/identity` on the outer interface.
+- **Bounded retrieval loop**. Server-side persistence forces deterministic KB query diversity before the model is allowed to say "I don't know."
+- **DMZ-deployable**. Systemd unit + Caddy reverse proxy on any Ubuntu VPS (a Hetzner CX22 is one example), no Docker required. See [`docs/deployment.md`](docs/deployment.md).
+- **REST-AP discoverable**. Publishes `/.well-known/restap.json` for compatible managers and clients.
 
 ## Requirements
 
@@ -74,9 +74,9 @@ Reports are written to `profiles/<slug>/journal/<timestamp>.md`. The profile mod
 
 ## Docs
 
-- [`docs/deployment.md`](docs/deployment.md) — systemd + Caddy on any Ubuntu VPS
-- [`docs/runbook.md`](docs/runbook.md) — day-2 ops: suspend, key rotation, KB rebuild, incident disable
-- [`SKILL.md`](SKILL.md) — endpoint contract + human overview
+- [`docs/deployment.md`](docs/deployment.md), systemd + Caddy on any Ubuntu VPS
+- [`docs/runbook.md`](docs/runbook.md), day-2 ops: suspend, key rotation, KB rebuild, incident disable
+- [`SKILL.md`](SKILL.md), endpoint contract + human overview
 
 ## License
 
